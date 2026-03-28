@@ -205,3 +205,10 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+```
+.env
+rktm83_memory/
+policy_state.json
+internships_tracker.csv
+seen_links.json
+__pycache__/
