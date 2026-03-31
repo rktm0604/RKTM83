@@ -32,9 +32,11 @@ logger = logging.getLogger("agent.career")
 SKILL_NAME = "career"
 
 # ── PROFILE ───────────────────────────────────────────────────────────────────
-# Loaded once at skill registration — injected into outreach prompts
+# Default profile — overridden at runtime by config.yaml identity section
 
-PROFILE = {
+_PROFILE = None   # Set by set_config() or falls back to DEFAULT_PROFILE
+
+DEFAULT_PROFILE = {
     "name":       "Raktim Banerjee",
     "education":  "2nd year BTech CSE, NIIT University (2024-2028)",
     "role":       "Microsoft Student Ambassador",
@@ -50,6 +52,33 @@ PROFILE = {
     "github":   "github.com/rktm0604",
     "linkedin": "linkedin.com/in/raktim-banerjee4421b6322",
 }
+
+
+def set_config(full_config: dict):
+    """Called by run_agent.py to inject config.yaml identity into the profile."""
+    global _PROFILE
+    identity = full_config.get("identity", {})
+    if identity:
+        _PROFILE = {
+            "name":       identity.get("name", DEFAULT_PROFILE["name"]),
+            "education":  identity.get("education", DEFAULT_PROFILE["education"]),
+            "role":       ", ".join(identity.get("roles", [DEFAULT_PROFILE["role"]])),
+            "target":     (identity.get("goals", [DEFAULT_PROFILE["target"]])[0]
+                           if identity.get("goals") else DEFAULT_PROFILE["target"]),
+            "projects":   identity.get("projects", DEFAULT_PROFILE["projects"]),
+            "skills":     identity.get("skills", DEFAULT_PROFILE["skills"]),
+            "github":     identity.get("github", DEFAULT_PROFILE["github"]),
+            "linkedin":   identity.get("linkedin", DEFAULT_PROFILE["linkedin"]),
+        }
+        logger.info("Career skill: profile loaded from config.yaml")
+    else:
+        _PROFILE = DEFAULT_PROFILE
+
+
+def _get_profile() -> dict:
+    """Get the current profile, falling back to default."""
+    return _PROFILE or DEFAULT_PROFILE
+
 
 # ── INTERNSHALA CATEGORIES ────────────────────────────────────────────────────
 
@@ -85,22 +114,25 @@ SCRAPE_HEADERS = {
 def _safe_get(url: str, timeout: int = 15):
     for attempt in range(3):
         try:
-            from bs4 import BeautifulSoup
             resp = requests.get(url, headers=SCRAPE_HEADERS, timeout=timeout)
             return resp
         except Exception as e:
+            logger.debug("_safe_get attempt %d: %s", attempt + 1, e)
             if attempt < 2:
                 time.sleep(2 ** attempt)
     return None
 
 def _profile_str() -> str:
-    p = PROFILE
+    p = _get_profile()
+    projects = p.get("projects", [])
+    if isinstance(projects, list):
+        projects = "; ".join(projects)
     return (
         f"Name: {p['name']}\n"
         f"Education: {p['education']}\n"
         f"Role: {p['role']}\n"
         f"Target: {p['target']}\n"
-        f"Projects: {'; '.join(p['projects'])}\n"
+        f"Projects: {projects}\n"
         f"Skills: {p['skills']}\n"
         f"GitHub: {p['github']}\n"
         f"LinkedIn: {p['linkedin']}"
@@ -112,6 +144,7 @@ def _search_opportunities(params: dict, context: dict, brain) -> dict:
     """
     Discover new opportunities from Internshala and DuckDuckGo.
     Stores each result in agent memory as an observation.
+    Deduplicates: skips opportunities whose link is already in memory.
     Returns count of new opportunities found.
     """
     # Policy check before any network calls
@@ -122,6 +155,7 @@ def _search_opportunities(params: dict, context: dict, brain) -> dict:
 
     brain.policy.record("search")
     found = []
+    skipped = 0
 
     # ── Internshala ──────────────────────────────────────────────────────────
     logger.info("Searching Internshala...")
@@ -147,6 +181,11 @@ def _search_opportunities(params: dict, context: dict, brain) -> dict:
                 link    = f"https://internshala.com{href}" if href.startswith('/') else href
 
                 if not title or len(title) < 5:
+                    continue
+
+                # Deduplication: skip if link already in memory
+                if link and brain.memory.has_link(link):
+                    skipped += 1
                     continue
 
                 opp = {
@@ -179,7 +218,7 @@ def _search_opportunities(params: dict, context: dict, brain) -> dict:
     # ── DuckDuckGo ───────────────────────────────────────────────────────────
     logger.info("Searching DuckDuckGo...")
     try:
-        from ddgs import DDGS
+        from duckduckgo_search import DDGS
         with DDGS() as ddgs:
             for query in SEARCH_QUERIES[:5]:
                 for r in list(ddgs.text(query, max_results=3)):
@@ -188,6 +227,12 @@ def _search_opportunities(params: dict, context: dict, brain) -> dict:
                     body  = r.get('body', '')
                     if not title or not link:
                         continue
+
+                    # Deduplication
+                    if brain.memory.has_link(link):
+                        skipped += 1
+                        continue
+
                     opp = {
                         "title":   title,
                         "company": "",
@@ -212,11 +257,12 @@ def _search_opportunities(params: dict, context: dict, brain) -> dict:
     # Save to CSV for compatibility with v8 workflow
     _save_to_csv(found)
 
-    logger.info("search_opportunities: found %d results", len(found))
+    logger.info("search_opportunities: found %d new, skipped %d duplicates", len(found), skipped)
     return {
         "success": True,
         "found":   len(found),
-        "summary": f"Found {len(found)} opportunities across Internshala and web search",
+        "skipped": skipped,
+        "summary": f"Found {len(found)} new opportunities ({skipped} duplicates skipped)",
     }
 
 
@@ -232,7 +278,7 @@ def _score_opportunity(params: dict, context: dict, brain) -> dict:
     if not title:
         return {"success": False, "error": "title required"}
 
-    prompt = f"""Evaluate this opportunity for {PROFILE['name']}.
+    prompt = f"""Evaluate this opportunity for {_get_profile()['name']}.
 
 PROFILE:
 {_profile_str()}
@@ -251,7 +297,7 @@ Rate 1-10 and explain. Consider:
 Respond ONLY in JSON:
 {{"score": 7, "fit": "HIGH/MEDIUM/LOW", "reason": "one sentence", "angle": "how to approach this"}}"""
 
-    result = brain._call_inference(prompt)
+    result = brain._infer(prompt)
     try:
         match = re.search(r'\{.*\}', result, re.DOTALL)
         if match:
@@ -296,9 +342,9 @@ def _draft_outreach(params: dict, context: dict, brain) -> dict:
             "reason": f"Already contacted {name} at {company} — skipping"
         }
 
-    prompt = f"""Draft a LinkedIn DM from Raktim to {name} ({role} at {company}).
+    prompt = f"""Draft a LinkedIn DM from {_get_profile()['name']} to {name} ({role} at {company}).
 
-RAKTIM'S PROFILE:
+{_get_profile()['name'].upper()}'S PROFILE:
 {_profile_str()}
 
 OPPORTUNITY: {opportunity}
@@ -306,14 +352,14 @@ OPPORTUNITY: {opportunity}
 RULES:
 - Max 5 sentences. No fluff.
 - Mention ONE specific thing about their company
-- Reference ONE of Raktim's projects that matches
+- Reference ONE of the sender's projects that matches
 - End with a specific question, not "let me know"
 - Do NOT say "I hope this message finds you well"
 - Tone: confident, direct — smart student not desperate applicant
 
 Output ONLY the DM text."""
 
-    dm = brain._call_inference(prompt)
+    dm = brain._infer(prompt)
 
     if not dm:
         return {"success": False, "error": "LLM returned empty response"}
@@ -406,7 +452,7 @@ def _send_digest(params: dict, context: dict, brain) -> dict:
     <div style="max-width:640px;margin:auto;">
     <div style="background:linear-gradient(135deg,#667eea,#764ba2);
     border-radius:12px 12px 0 0;padding:28px;text-align:center;">
-    <h1 style="color:white;margin:0;">RakBot v9 Digest</h1>
+    <h1 style="color:white;margin:0;">RKTM83 Digest</h1>
     <p style="color:rgba(255,255,255,0.8);margin:6px 0 0;">
     {today} · Autonomous Agent Report</p></div>
     <div style="background:white;padding:24px;border-radius:0 0 12px 12px;">
@@ -414,7 +460,7 @@ def _send_digest(params: dict, context: dict, brain) -> dict:
     Recent Opportunities ({len(recent)})</h2>
     {cards}
     <p style="color:#888;font-size:11px;margin-top:20px;">
-    RakBot v9 · NemoClaw-inspired Autonomous Agent</p>
+    RKTM83 · NemoClaw-inspired Autonomous Agent</p>
     </div></div></body></html>"""
 
     try:
@@ -423,7 +469,7 @@ def _send_digest(params: dict, context: dict, brain) -> dict:
         from email.mime.multipart import MIMEMultipart
 
         msg = MIMEMultipart('alternative')
-        msg['Subject'] = f"RakBot v9: {len(recent)} opportunities · {today}"
+        msg['Subject'] = f"RKTM83: {len(recent)} opportunities · {today}"
         msg['From']    = gmail_user
         msg['To']      = gmail_user
         msg.attach(MIMEText(html, 'html'))
@@ -473,7 +519,6 @@ def register(agent):
     """
     Called by agent.load_skill(career_skill).
     Registers all career tools with the agent brain.
-    Also adds career-specific allowed hosts to policy.
     """
     # Register tools
     agent.brain.register_tool(

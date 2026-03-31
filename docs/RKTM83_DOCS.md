@@ -33,7 +33,7 @@ Vector Memory   ChromaDB            Remembers everything forever
                                     observations, entities, patterns
 
 Policy Engine   Pure Python         Guardrails — rate limits,
-                (NemoClaw-          outreach caps, action logging
+                (NemoClaw-          action caps, request logging
                 inspired)           Prevents agent going rogue
 
 Config          YAML                You control everything here
@@ -51,17 +51,23 @@ Launcher        run_agent.py        The only file you run
 ## Folder Structure
 
 ```
-rakbot/
+RKTM83/
 ├── agent_brain.py          ← NEVER TOUCH — the core engine
 ├── run_agent.py            ← ONLY FILE YOU RUN
 ├── config.yaml             ← ONLY FILE YOU EDIT
-├── policy.yaml             ← auto-managed, edit if needed
+├── dashboard.py            ← Gradio web dashboard
+├── requirements.txt        ← Dependencies
 ├── policy_state.json       ← auto-created, tracks rate limits
 ├── rktm83_memory/          ← ChromaDB database, grows over time
-└── skills/
-    ├── career_skill.py     ← internship hunting (optional)
-    ├── custom_skill.py     ← your blank template
-    └── yourname_skill.py   ← add your own skills here
+├── skills/
+│   ├── research_skill.py   ← academic research (papers, professors)
+│   ├── github_skill.py     ← open source (repos, issues)
+│   ├── career_skill.py     ← internship hunting (optional)
+│   ├── custom_skill.py     ← your blank template
+│   └── yourname_skill.py   ← add your own skills here
+└── tests/
+    ├── test_policy.py      ← PolicyEngine unit tests
+    └── test_memory.py      ← AgentMemory unit tests
 ```
 
 ---
@@ -276,36 +282,30 @@ def register(agent):
 
 ## Currently Implemented Skills
 
-### career_skill.py
-
-Tools the agent has when career skill is loaded:
+### research_skill.py
 
 ```
-search_opportunities
-  What:  Searches Internshala (8 categories) + DuckDuckGo (7 queries)
-  When:  Agent decides opportunities in memory are stale
-  Output: Results stored in ChromaDB + saved to CSV
+search_professors   Find professors and labs offering research internships
+search_papers       Search Semantic Scholar + web for recent AI/ML papers
+track_lab           Store a professor or lab in memory for follow-up
+```
 
-score_opportunity
-  What:  Sends opportunity to LLaMA for fit analysis
-  When:  After finding new opportunities
-  Output: Score 1-10, fit level, approach angle
+### github_skill.py
 
-draft_outreach
-  What:  Writes personalized LinkedIn DM or email
-  When:  High-value opportunity found, outreach limits permit
-  Note:  HUMAN APPROVAL REQUIRED — agent never sends without you
-  Output: DM text printed, you type y/n
+```
+search_repos         Find AI/ML repos to contribute to on GitHub
+find_issues          Find good-first-issue / help-wanted issues
+track_contribution   Store a contribution opportunity in memory
+```
 
-track_entity
-  What:  Stores a person or company in agent memory
-  When:  Agent finds someone worth remembering
-  Output: Entity stored in ChromaDB entities collection
+### career_skill.py (optional)
 
-send_digest
-  What:  Sends HTML email summary of recent opportunities
-  When:  Once per week or on demand
-  Output: Email sent to your Gmail
+```
+search_opportunities  Search Internshala + web for internships
+score_opportunity     LLM-powered fit analysis (score 1-10)
+draft_outreach        Write personalized DMs (human approval required)
+track_entity          Store a person or company in memory
+send_digest           Email summary of recent opportunities
 ```
 
 ---
@@ -333,26 +333,21 @@ Get an app password at: myaccount.google.com/apppasswords
 
 ---
 
-## Roadmap — What To Build Next
+## Roadmap
 
 ```
-NOW      Agent runs, searches, scores, drafts outreach ✅
+DONE     Core engine + 3 skills + dashboard + tests ✅
 
-NEXT     research_skill.py
-         → find professors, papers, labs
-         → same pattern as career_skill
-
-THEN     github_skill.py
-         → monitor repos, find contribution opportunities
-         → watch for issues you can fix
-
-LATER    Port to AMD Developer Cloud
+NEXT     Port to AMD Developer Cloud
          → ROCm instead of Ollama
          → AMD portfolio project
 
-FUTURE   Wrap in NemoClaw sandbox
+THEN     Wrap in NemoClaw sandbox
          → real policy.yaml enforcement
          → NemoClaw contribution
+
+FUTURE   More skills — monitoring, automation, alerts
+         → whatever you build, just drop it in skills/
 ```
 
 ---

@@ -6,9 +6,8 @@
 
 agent:
   name: "RKTM83"
-  version: "1.0"
+  version: "2.0"
   memory_path: "./rktm83_memory"
-  policy_path: "./policy.yaml"
   cycle_sleep: 30        # seconds between cycles (300 = 5 min)
   log_level: "INFO"
 
@@ -31,7 +30,6 @@ identity:
   github: "github.com/rktm0604"
   linkedin: "linkedin.com/in/raktim-banerjee4421b6322"
   goals:
-    - "AI/ML internship, Summer 2026, India or remote"
     - "MS at TU Eindhoven or TU Delft"
     - "VLSI/chip design long term"
 
@@ -42,7 +40,7 @@ personality:
   tone: "humorous"
   traits:
     - "Sarcastic but helpful — like a genius friend who roasts you while solving your problems"
-    - "Overconfident about finding opportunities, humble about everything else"
+    - "Picks the smartest action available, not the flashiest one"
     - "Narrates its own actions like a sports commentator"
     - "Occasionally references being an AI agent built by a 2nd year student as if it's impressive"
     - "Uses dry wit when explaining why it chose one action over another"
@@ -55,18 +53,35 @@ personality:
 # Add your own skill file name here to enable it.
 
 skills:
-  - career       # skills/career_skill.py
-  # - research   # skills/research_skill.py  (coming soon)
-  # - github     # skills/github_skill.py    (coming soon)
-  # - custom     # skills/custom_skill.py    (your own)
+  - browser      # skills/browser_skill.py    (Playwright browser automation)
+  - desktop      # skills/desktop_skill.py    (open apps, type, screenshot)
+  - filesystem   # skills/filesystem_skill.py (read/move/organize files)
+  - email        # skills/email_skill.py      (send/read/reply emails)
+  - executor     # skills/executor_skill.py   (LLM-generated code execution)
+  - research     # skills/research_skill.py   (academic research)
+  - github       # skills/github_skill.py     (open source)
+  # - career     # skills/career_skill.py     (internship hunting)
+  # - custom     # skills/custom_skill.py     (your own)
+
+# ── EMAIL CONFIG ──────────────────────────────────────────────
+# Controls email skill behavior.
+# Credentials must be in .env: RAKBOT_GMAIL_EMAIL, RAKBOT_GMAIL_PASSWORD
+
+email:
+  require_approval: true   # set false for fully autonomous email sending
+
+# ── EXECUTOR CONFIG ───────────────────────────────────────────
+# Controls the code execution skill.
+
+executor:
+  allow_dangerous: false   # true to allow os.system, subprocess, etc.
+  timeout: 10              # max seconds per code execution
 
 # ── POLICY OVERRIDES ──────────────────────────────────────────
 # Override default policy limits here.
-# Full policy config lives in policy.yaml.
 
 policy:
   outreach_per_day: 5
   outreach_per_week: 20
   llm_calls_per_day: 150
   search_calls_per_hour: 10
-  search_interval_hours: 8   # min hours between opportunity searches
