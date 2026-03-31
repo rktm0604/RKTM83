@@ -5,6 +5,8 @@
 ### Personal Autonomous Agent
 
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
+[![Tests](https://github.com/rktm0604/RKTM83/actions/workflows/test.yml/badge.svg)](https://github.com/rktm0604/RKTM83/actions/workflows/test.yml)
+[![Groq](https://img.shields.io/badge/Groq-Llama_3.1_70B-00A67E?style=for-the-badge)](https://groq.com)
 [![Ollama](https://img.shields.io/badge/Ollama-LLaMA_3.2-FF6F00?style=for-the-badge&logo=meta&logoColor=white)](https://ollama.ai)
 [![ChromaDB](https://img.shields.io/badge/ChromaDB-Vector_Memory-4285F4?style=for-the-badge&logo=google-cloud&logoColor=white)](https://www.trychroma.com)
 [![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)

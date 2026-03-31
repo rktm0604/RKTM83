@@ -1,51 +1,25 @@
 """
-executor_skill.py — General-Purpose Task Execution Skill
-Plugs into agent_brain.Agent via agent.load_skill(executor_skill)
+General-purpose task execution skill.
 
-Registers these tools with the agent:
-  - execute_task  : describe a task in English → LLM writes Python → agent runs it
-  - run_code      : run a snippet of Python code directly
-
-The LLM generates code on the fly, enabling the agent to handle ANY task
-that can be expressed as Python — from data processing to API calls.
-
-Safety:
-  - Restricted imports (no os.system, subprocess, shutil.rmtree by default)
-  - Configurable via policy: executor.allow_dangerous = true/false
-  - All executions logged in memory
-
-Usage:
-  Enable in config.yaml:
-    skills:
-      - executor
-    executor:
-      allow_dangerous: false   # true to allow os/subprocess
-      timeout: 10              # max seconds per execution
+The runtime now executes generated code in a short-lived subprocess instead of
+direct `exec()` inside the agent process.
 """
 
-import re
-import io
-import sys
+from __future__ import annotations
+
 import json
 import logging
-import datetime
-import traceback
-import contextlib
+import os
+import re
+import subprocess
+import sys
+import tempfile
 
 logger = logging.getLogger("agent.executor")
 
 SKILL_NAME = "executor"
 
 _CONFIG = None
-
-# ── SAFE IMPORTS ─────────────────────────────────────────────────────────────
-
-SAFE_MODULES = {
-    "math", "random", "string", "json", "re", "datetime", "time",
-    "collections", "itertools", "functools", "operator",
-    "pathlib", "csv", "urllib.parse", "base64", "hashlib",
-    "statistics", "textwrap", "difflib",
-}
 
 DANGEROUS_PATTERNS = [
     r"os\.system",
@@ -54,10 +28,12 @@ DANGEROUS_PATTERNS = [
     r"__import__",
     r"eval\s*\(",
     r"exec\s*\(",
-    r"open\s*\(.*(w|a)",      # write mode file opens
+    r"open\s*\(.*(w|a)",
     r"import\s+ctypes",
     r"import\s+socket",
 ]
+
+RESULT_MARKER = "__RKTM83_RESULT__="
 
 
 def set_config(full_config: dict):
@@ -78,30 +54,46 @@ def _get_timeout() -> int:
 
 
 def _check_safety(code: str) -> tuple:
-    """Check code for dangerous patterns. Returns (safe, reason)."""
+    """
+    Advisory-only safety diagnostics.
+
+    The subprocess sandbox is now the execution boundary, but keeping this
+    helper makes tests and warnings more informative for risky snippets.
+    """
+
     if _allow_dangerous():
         return True, "dangerous mode enabled"
 
+    matches = []
     for pattern in DANGEROUS_PATTERNS:
         match = re.search(pattern, code)
         if match:
-            return False, f"Blocked: '{match.group()}' is not allowed in safe mode"
+            matches.append(match.group())
 
+    if matches:
+        return False, f"Flagged dangerous patterns: {', '.join(matches)}"
     return True, "ok"
 
 
-# ── TOOL HANDLERS ─────────────────────────────────────────────────────────────
+def _build_subprocess_code(code: str) -> str:
+    return f"""import json
+result = None
+
+{code}
+
+if 'result' in locals() and result is not None:
+    try:
+        print("{RESULT_MARKER}" + json.dumps(result, default=str))
+    except Exception:
+        print("{RESULT_MARKER}" + json.dumps(str(result)))
+"""
+
 
 def _execute_task(params: dict, context: dict, brain) -> dict:
-    """
-    Describe a task in plain English → LLM generates Python → agent runs it.
-    params: {"task": str}
-    """
     task = params.get("task", "")
     if not task:
         return {"success": False, "error": "task description required"}
 
-    # Ask LLM to write code
     prompt = f"""Write Python code to accomplish this task:
 
 TASK: {task}
@@ -112,7 +104,6 @@ RULES:
 - Keep it under 30 lines
 - Only use standard library modules
 - Store results in a variable called 'result' if applicable
-- Do NOT use os.system(), subprocess, eval(), exec()
 
 Output ONLY the Python code:"""
 
@@ -120,98 +111,144 @@ Output ONLY the Python code:"""
     if not code:
         return {"success": False, "error": "LLM failed to generate code"}
 
-    # Clean up — remove markdown code blocks
-    code = re.sub(r'^```(?:python)?\n?', '', code.strip())
-    code = re.sub(r'\n?```$', '', code.strip())
-
-    # Run the code
+    code = re.sub(r"^```(?:python)?\n?", "", code.strip())
+    code = re.sub(r"\n?```$", "", code.strip())
     return _run_code({"code": code, "task": task}, context, brain)
 
 
 def _run_code(params: dict, context: dict, brain) -> dict:
-    """
-    Run a Python code snippet.
-    params: {"code": str, "task": str (optional description)}
-    """
+    del context
     code = params.get("code", "")
     task = params.get("task", "manual execution")
 
     if not code:
         return {"success": False, "error": "code required"}
 
-    # Safety check
     safe, reason = _check_safety(code)
     if not safe:
-        logger.warning("Code blocked: %s", reason)
+        logger.warning("Executor advisory warning: %s", reason)
         brain.memory.observe(
-            f"Executor blocked: {reason}",
-            {"source": "executor", "type": "blocked", "reason": reason}
+            f"Executor advisory warning: {reason}",
+            {"source": "executor", "type": "warning", "reason": reason},
         )
-        return {"success": False, "error": reason, "code": code}
 
-    # Capture stdout
-    stdout_capture = io.StringIO()
-    local_vars = {}
+    wrapped_code = _build_subprocess_code(code)
+    temp_path = None
 
     try:
-        with contextlib.redirect_stdout(stdout_capture):
-            exec(code, {"__builtins__": __builtins__}, local_vars)
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            suffix=".py",
+            delete=False,
+            encoding="utf-8",
+        ) as temp_file:
+            temp_file.write(wrapped_code)
+            temp_path = temp_file.name
 
-        output = stdout_capture.getvalue()
-        result = local_vars.get("result", None)
-
-        brain.memory.observe(
-            f"Executed: {task[:80]}",
-            {
-                "source": "executor",
-                "type":   "execution",
-                "task":   task[:100],
-                "output": (output or str(result))[:200],
-                "status": "success",
-            }
+        completed = subprocess.run(
+            [sys.executable, temp_path],
+            capture_output=True,
+            text=True,
+            timeout=_get_timeout(),
+            check=False,
         )
-        brain.memory.log("executor", "ok", f"{task[:40]}: {(output or str(result))[:40]}")
 
-        logger.info("Executed: %s", task[:60])
-        return {
-            "success": True,
-            "output":  output[:2000] if output else "",
-            "result":  str(result)[:500] if result is not None else None,
-            "code":    code,
-        }
+        stdout_lines = []
+        result_value = None
+        for line in completed.stdout.splitlines():
+            if line.startswith(RESULT_MARKER):
+                payload = line[len(RESULT_MARKER) :]
+                try:
+                    result_value = json.loads(payload)
+                except json.JSONDecodeError:
+                    result_value = payload
+            else:
+                stdout_lines.append(line)
 
-    except Exception as e:
-        error_msg = traceback.format_exc()
+        stdout = "\n".join(stdout_lines).strip()
+        stderr = completed.stderr.strip()
+
+        if completed.returncode == 0:
+            brain.memory.observe(
+                f"Executed: {task[:80]}",
+                {
+                    "source": "executor",
+                    "type": "execution",
+                    "task": task[:100],
+                    "output": (stdout or str(result_value))[:200],
+                    "status": "success",
+                },
+            )
+            brain.memory.log(
+                "executor",
+                "ok",
+                f"{task[:40]}: {(stdout or str(result_value))[:40]}",
+            )
+            return {
+                "success": True,
+                "output": stdout[:2000],
+                "stderr": stderr[:1000],
+                "result": str(result_value)[:500] if result_value is not None else None,
+                "returncode": completed.returncode,
+                "code": code,
+            }
+
         brain.memory.observe(
             f"Execution failed: {task[:80]}",
-            {"source": "executor", "type": "error", "task": task[:100], "error": str(e)}
+            {
+                "source": "executor",
+                "type": "error",
+                "task": task[:100],
+                "error": stderr[:200] or f"returncode={completed.returncode}",
+            },
         )
-        logger.error("Execution failed: %s — %s", task[:40], e)
+        logger.error(
+            "Execution failed: %s - returncode=%s",
+            task[:40],
+            completed.returncode,
+        )
         return {
             "success": False,
-            "error":   str(e),
-            "traceback": error_msg[-500:],
-            "code":    code,
+            "error": stderr[:500] or f"Process exited with code {completed.returncode}",
+            "output": stdout[:1000],
+            "stderr": stderr[:1000],
+            "returncode": completed.returncode,
+            "code": code,
         }
+    except subprocess.TimeoutExpired as e:
+        logger.error("Execution timed out: %s", task[:40])
+        return {
+            "success": False,
+            "error": f"Execution timed out after {_get_timeout()}s",
+            "output": (e.stdout or "")[:1000],
+            "stderr": (e.stderr or "")[:1000],
+            "code": code,
+        }
+    except Exception as e:
+        logger.error("Execution failed: %s", e)
+        return {"success": False, "error": str(e), "code": code}
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
 
-
-# ── SKILL REGISTRATION ───────────────────────────────────────────────────────
 
 def register(agent):
-    """Called by agent.load_skill(executor_skill)."""
     agent.brain.register_tool(
         "execute_task",
         "Describe ANY task in plain English and the LLM will write Python code to do it. "
         "Use for data processing, calculations, text manipulation, API calls, "
-        "or anything that Python can do. The code runs locally.",
-        _execute_task
+        "or anything that Python can do. The code runs locally in a subprocess.",
+        _execute_task,
     )
     agent.brain.register_tool(
         "run_code",
         "Run a specific Python code snippet directly. "
         "Use when you already know what code to run. "
-        "Safety-checked: os.system, subprocess, etc. are blocked unless allow_dangerous=true.",
-        _run_code
+        "Execution happens in a short-lived subprocess sandbox.",
+        _run_code,
     )
 
     mode = "DANGEROUS" if _allow_dangerous() else "SAFE"

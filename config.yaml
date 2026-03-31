@@ -60,8 +60,20 @@ skills:
   - executor     # skills/executor_skill.py   (LLM-generated code execution)
   - research     # skills/research_skill.py   (academic research)
   - github       # skills/github_skill.py     (open source)
+  - notify       # skills/notify_skill.py     (Windows toast notifications)
   # - career     # skills/career_skill.py     (internship hunting)
   # - custom     # skills/custom_skill.py     (your own)
+
+brain:
+  provider: "groq"                    # "groq" or "ollama"
+  groq_model: "llama-3.1-70b-versatile"
+  ollama_model: "llama3.2:3b"
+  fallback: true                      # fall back to ollama if groq fails
+
+notifications:
+  enabled: true
+  on_success: true
+  on_error: true
 
 # ── EMAIL CONFIG ──────────────────────────────────────────────
 # Controls email skill behavior.

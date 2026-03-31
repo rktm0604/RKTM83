@@ -109,17 +109,13 @@ def _open_app(params: dict, context: dict, brain) -> dict:
         return {"success": True, "app": app_name, "exe": exe}
 
     except FileNotFoundError:
-        # Try via start command (Windows)
         try:
-            subprocess.Popen(
-                f'start "" "{exe}" {args}',
-                shell=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            time.sleep(1)
-            logger.info("Opened via start: %s", app_name)
-            return {"success": True, "app": app_name, "method": "start"}
+            if hasattr(os, "startfile") and not args:
+                os.startfile(exe)
+                time.sleep(1)
+                logger.info("Opened via os.startfile: %s", app_name)
+                return {"success": True, "app": app_name, "method": "startfile"}
+            return {"success": False, "error": f"Could not open {app_name}: executable not found"}
         except Exception as e2:
             return {"success": False, "error": f"Could not open {app_name}: {e2}"}
     except Exception as e:

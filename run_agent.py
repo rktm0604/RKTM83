@@ -135,6 +135,8 @@ if __name__ == "__main__":
         memory_path      = cfg.get("memory_path", "./rktm83_memory"),
         policy_overrides = overrides,
         state_path       = "policy_state.json",
+        config           = CONFIG,
+        agent_state_path = "agent_state.json",
     )
 
     # Store full config in context so skills can access it
