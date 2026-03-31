@@ -1,319 +1,203 @@
 <div align="center">
 
-# 🤖 RKTM83
+# RKTM83
 
-### Personal Autonomous Agent
+### Personal Autonomous Agent for Windows
 
-[![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
 [![Tests](https://github.com/rktm0604/RKTM83/actions/workflows/test.yml/badge.svg)](https://github.com/rktm0604/RKTM83/actions/workflows/test.yml)
-[![Groq](https://img.shields.io/badge/Groq-Llama_3.1_70B-00A67E?style=for-the-badge)](https://groq.com)
-[![Ollama](https://img.shields.io/badge/Ollama-LLaMA_3.2-FF6F00?style=for-the-badge&logo=meta&logoColor=white)](https://ollama.ai)
-[![ChromaDB](https://img.shields.io/badge/ChromaDB-Vector_Memory-4285F4?style=for-the-badge&logo=google-cloud&logoColor=white)](https://www.trychroma.com)
+[![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
+[![Groq](https://img.shields.io/badge/Brain-Groq%20Llama%203.1%2070B-00A67E?style=for-the-badge)](https://groq.com)
+[![Ollama Fallback](https://img.shields.io/badge/Fallback-Ollama-111111?style=for-the-badge)](https://ollama.ai)
+[![ChromaDB](https://img.shields.io/badge/Memory-ChromaDB-4285F4?style=for-the-badge)](https://www.trychroma.com)
 [![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
 
-<br>
+**Groq-first autonomous agent with browser, desktop, filesystem, email, research, and GitHub skills.**
 
 *"Running on an RTX 3050 and pure ambition."*
 
-**A NemoClaw-inspired autonomous agent with full computer-use capabilities.**<br>
-**It can control your browser, desktop, filesystem, emails — and think for itself.**
-
-<br>
-
-[Quick Start](#-quick-start) · [Skills](#-skills) · [Chat Mode](#-two-modes) · [Architecture](#-architecture) · [Config](#-configuration)
-
----
+[Quick Start](#quick-start) · [Capabilities](#capabilities) · [Architecture](#architecture) · [Configuration](#configuration) · [Roadmap](#roadmap)
 
 </div>
 
-<br>
+---
 
-## ✨ What Is This
+## Overview
 
-RKTM83 is an **autonomous agent** that runs on your laptop. You start it once — it runs forever.
+RKTM83 is a local-first autonomous agent designed to run on your own machine, make decisions cycle by cycle, execute tools, remember what happened, and recover from failure without starting from zero.
 
-It is **not a chatbot**. It doesn't wait for you to ask it something.
-It thinks every cycle, picks an action, executes it, remembers the result, and repeats.
+It supports both:
 
-But it *can* also talk to you when you want (`--chat` mode).
+- `Autonomous mode` for continuous background operation
+- `Chat mode` for direct interactive control
 
-> **9 pluggable skills** · **22 tools** · **Persistent vector memory** · **Policy guardrails**
+## Why This Repo Is Different
 
-<br>
+- `Groq-first brain` with Ollama fallback
+- `Persistent vector memory` using ChromaDB
+- `Crash recovery` with saved agent state
+- `Self-healing loop` with backoff after repeated failures
+- `Windows notifications` for success and error summaries
+- `Supervisor process` for restart-on-crash behavior
+- `Subprocess executor sandbox` instead of in-process `exec()`
+- `GitHub Actions CI` with offline-safe tests
 
-## 🏗 Architecture
+## Capabilities
 
+| Area | What RKTM83 Can Do |
+|---|---|
+| `Brain` | Use Groq by default and fall back to Ollama when needed |
+| `Browser` | Open pages, search the web, click elements, and fill forms with Playwright |
+| `Desktop` | Open apps, type text, take screenshots, and send hotkeys |
+| `Filesystem` | List files, read files, move files, and organize folders |
+| `Email` | Read inbox, send email, and draft replies once Gmail credentials are set |
+| `Research` | Search papers, labs, and professors |
+| `GitHub` | Search repos, find issues, and track contribution targets |
+| `Executor` | Generate Python for a task and run it in a subprocess sandbox |
+| `Memory` | Store observations, actions, entities, and learned patterns |
+| `Ops` | Resume from state, notify on results, restart after crashes, and run under a supervisor |
+
+## Architecture
+
+```mermaid
+flowchart TD
+    A["run_agent.py"] --> B["Agent"]
+    B --> C["PolicyEngine"]
+    B --> D["AgentMemory"]
+    B --> E["AgentBrain"]
+    E --> F["Groq"]
+    E --> G["Ollama Fallback"]
+    B --> H["Skills"]
+    H --> I["Browser"]
+    H --> J["Desktop"]
+    H --> K["Filesystem"]
+    H --> L["Email"]
+    H --> M["Research"]
+    H --> N["GitHub"]
+    H --> O["Executor"]
+    B --> P["agent_state.json"]
+    B --> Q["Windows Notifications"]
+    R["supervisor.py"] --> A
 ```
-┌─────────────────────────────────────────────────────────┐
-│                      run_agent.py                        │
-│            --chat (interactive) │ autonomous              │
-├─────────────────────────────────────────────────────────┤
-│                                                          │
-│   ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  │
-│   │ PolicyEngine │  │ AgentMemory  │  │  AgentBrain  │  │
-│   │              │  │              │  │              │  │
-│   │ Rate limits  │  │  ChromaDB    │  │  LLaMA 3.2   │  │
-│   │ Guardrails   │  │  4 vector    │  │  via Ollama  │  │
-│   │ ALLOW / DENY │  │  collections │  │  on your GPU │  │
-│   └──────────────┘  └──────────────┘  └──────────────┘  │
-│                                                          │
-├─────────────────────────────────────────────────────────┤
-│                    Skills (Pluggable)                     │
-│                                                          │
-│  🌐 browser  │ 🖥 desktop  │ 📁 filesystem │ 📧 email   │
-│  ⚡ executor │ 🔬 research │ 🐙 github     │ 💼 career  │
-│                                                          │
-└─────────────────────────────────────────────────────────┘
-```
 
-**Three layers** inspired by [NVIDIA NemoClaw](https://developer.nvidia.com/blog/building-agentic-ai-applications-with-nvidia-nemoclaw/):
-
-| Layer | What It Does |
-|:------|:-------------|
-| **PolicyEngine** | Guardrails — rate limits, ALLOW/ROUTE/DENY gating on every action |
-| **AgentMemory** | ChromaDB vector store — observations, entities, actions, learned patterns |
-| **AgentBrain** | LLM decision engine — picks the best tool, formats params, explains reasoning |
-
-<br>
-
-## 🚀 Quick Start
+## Quick Start
 
 ```bash
-# Clone
 git clone https://github.com/rktm0604/RKTM83.git
 cd RKTM83
-
-# Install dependencies
 pip install -r requirements.txt
-playwright install chromium        # for browser skill
+python -m playwright install chromium
+```
 
-# Pull the LLM model
-ollama pull llama3.2:3b
+Create a `.env` later with the credentials you want to enable:
 
-# 💬 Chat mode — talk to the agent
+```env
+GROQ_API_KEY=your_groq_key
+RAKBOT_GMAIL_EMAIL=your_email@gmail.com
+RAKBOT_GMAIL_PASSWORD=your_gmail_app_password
+GITHUB_TOKEN=optional_but_recommended
+```
+
+Then run:
+
+```bash
+# Interactive chat mode
 python run_agent.py --chat
 
-# 🔄 Autonomous mode — runs forever
+# Autonomous mode
 python run_agent.py
 
-# 🧪 Other commands
-python run_agent.py --cycles 5 --cycle-sleep 10    # test run
-python run_agent.py --status                        # check status
-python run_agent.py --test-skills                   # verify skills
-python dashboard.py                                 # web dashboard
+# Status and health checks
+python run_agent.py --status
+python run_agent.py --test-skills
+
+# Keep it alive like a service
+python supervisor.py
 ```
 
-<br>
+## Example Daily Uses
 
-## 💬 Two Modes
+- Track fresh AI/ML papers
+- Hunt for beginner-friendly GitHub issues
+- Organize local folders safely with dry-run support
+- Open apps and automate repetitive browser flows
+- Run short Python tasks in an isolated subprocess
+- Notify you when the agent completes or fails an action
 
-<table>
-<tr>
-<td width="50%">
+## Configuration
 
-### 🗣 Chat Mode
-```
-python run_agent.py --chat
-```
+Everything important is driven from [`config.yaml`](config.yaml).
 
-You type → agent picks tool → executes → responds
-
-```
-[RKTM83] > open notepad
-→ Tool: open_app
-→ Why:  User wants to launch Notepad
-✓ Success
-  app: notepad
-
-[RKTM83] > list files on my desktop  
-→ Tool: list_files
-✓ Success
-  count: 23
-
-[RKTM83] > search google for AI agents
-→ Tool: search_web
-✓ Success
-  results: [...]
-```
-
-</td>
-<td width="50%">
-
-### 🔄 Autonomous Mode
-```
-python run_agent.py
-```
-
-Runs forever. Zero input needed.
-
-```
-Cycle 1: search_papers
-  → Found 12 papers
-
-Cycle 2: find_issues
-  → Found 5 good-first-issues
-
-Cycle 3: search_repos
-  → Found 8 repos to contribute to
-
-Cycle 4: wait
-  → Nothing urgent, sleeping...
-```
-
-</td>
-</tr>
-</table>
-
-<br>
-
-## 🧩 Skills
-
-> **9 skills · 22 tools · Fully pluggable** — enable/disable any combination in `config.yaml`
-
-| Skill | Tools | Description |
-|:------|:------|:------------|
-| 🌐 **browser** | `browse_url` · `fill_form` · `click_element` · `search_web` | Playwright — browse any site, fill forms, click buttons, Google search |
-| 🖥 **desktop** | `open_app` · `type_text` · `screenshot` · `hotkey` | Open apps, type text, screenshots, keyboard shortcuts |
-| 📁 **filesystem** | `list_files` · `read_file` · `move_file` · `organize_folder` | Read files, move/rename, auto-sort Downloads by type |
-| 📧 **email** | `send_email` · `read_inbox` · `reply_email` | Gmail send/read/reply with configurable approval |
-| ⚡ **executor** | `execute_task` · `run_code` | Describe any task in English → LLM writes Python → runs it |
-| 🔬 **research** | `search_professors` · `search_papers` · `track_lab` | Semantic Scholar + web search for papers and labs |
-| 🐙 **github** | `search_repos` · `find_issues` · `track_contribution` | Find repos, good-first-issues, track contributions |
-| 💼 **career** | `search_opportunities` · `score_opportunity` · `draft_outreach` + 2 more | Internship hunting with LLM scoring (optional) |
-| 🔧 **custom** | *Your tools here* | Template — copy, rename, add your own tools |
-
-<details>
-<summary><b>📝 How to add your own skill</b></summary>
-
-<br>
-
-1. Copy `skills/custom_skill.py` → `skills/yourname_skill.py`
-2. Add tool handler functions
-3. Register tools in the `register(agent)` function
-4. Add `yourname` to `config.yaml` skills list
-5. Restart the agent
-
-</details>
-
-<br>
-
-## ⚙️ Configuration
-
-Everything is controlled via `config.yaml` — **no code changes needed**:
+Key runtime settings now include:
 
 ```yaml
-agent:
-  name: "RKTM83"
-  cycle_sleep: 30
+brain:
+  provider: "groq"
+  groq_model: "llama-3.1-70b-versatile"
+  ollama_model: "llama3.2:3b"
+  fallback: true
 
-identity:
-  name: "Your Name"
-  skills: "Python, AI, ML"
-  goals:
-    - "Your goal here"
-
-skills:                         # comment out to disable any
-  - browser
-  - desktop
-  - filesystem
-  - email
-  - executor
-  - research
-  - github
-
-email:
-  require_approval: true        # false = fully autonomous
-
-executor:
-  allow_dangerous: false        # true = allows os.system, subprocess
-  timeout: 10
-
-policy:
-  llm_calls_per_day: 150
-  search_calls_per_hour: 10
+notifications:
+  enabled: true
+  on_success: true
+  on_error: true
 ```
 
-<br>
+## Project Structure
 
-## 📂 Project Structure
-
-```
+```text
 RKTM83/
-├── 🧠 agent_brain.py           ← Core engine (PolicyEngine, AgentMemory, AgentBrain, Agent)
-├── 🚀 run_agent.py             ← Launcher (--chat / autonomous / --status / --test-skills)
-├── ⚙️ config.yaml              ← Configuration (the only file you edit)
-├── 📊 dashboard.py             ← Gradio web dashboard
-├── 📦 requirements.txt         ← Dependencies
-│
-├── 🧩 skills/
-│   ├── browser_skill.py        ← Playwright browser automation
-│   ├── desktop_skill.py        ← pyautogui desktop control
-│   ├── filesystem_skill.py     ← File operations
-│   ├── email_skill.py          ← Gmail send/read/reply
-│   ├── executor_skill.py       ← LLM code execution
-│   ├── research_skill.py       ← Academic research
-│   ├── github_skill.py         ← Open source
-│   ├── career_skill.py         ← Internship hunting (optional)
-│   └── custom_skill.py         ← Your template
-│
-├── 🧪 tests/
-│   ├── test_policy.py          ← PolicyEngine tests (14 tests)
-│   └── test_memory.py          ← AgentMemory tests (21 tests)
-│
-└── 📚 docs/
-    └── RKTM83_DOCS.md          ← Full documentation
+├── agent_brain.py
+├── run_agent.py
+├── supervisor.py
+├── dashboard.py
+├── resilience.py
+├── config.yaml
+├── requirements.txt
+├── skills/
+│   ├── browser_skill.py
+│   ├── desktop_skill.py
+│   ├── filesystem_skill.py
+│   ├── email_skill.py
+│   ├── executor_skill.py
+│   ├── research_skill.py
+│   ├── github_skill.py
+│   ├── notify_skill.py
+│   ├── career_skill.py
+│   └── custom_skill.py
+└── tests/
+    ├── test_policy.py
+    ├── test_memory.py
+    ├── test_executor.py
+    ├── test_filesystem.py
+    └── test_career.py
 ```
 
-<br>
+## Reliability Upgrades
 
-## 🔒 Safety
+- `Groq + fallback`: stronger default reasoning with local fallback
+- `Retry + circuit breaker`: less fragile external API handling
+- `State persistence`: resume from `agent_state.json`
+- `Supervisor`: restart after a process crash
+- `Notifications`: immediate Windows toast summaries
+- `CI`: GitHub Actions test workflow on push and pull request
 
-| Layer | Protection |
-|:------|:-----------|
-| **Policy Engine** | Rate limits on all actions (outreach, LLM calls, searches) |
-| **Human Approval** | Email and outreach require `y/n` confirmation by default |
-| **Executor Sandbox** | Dangerous patterns blocked (`os.system`, `subprocess`, `eval`, etc.) |
-| **Memory Isolation** | Each agent instance has its own ChromaDB database |
-| **Config Control** | All limits configurable via YAML — no code needed |
+## Roadmap
 
-<br>
-
-## 🛠 Requirements
-
-| Component | Requirement |
-|:----------|:------------|
-| **Python** | 3.10+ |
-| **LLM** | [Ollama](https://ollama.ai/) with `llama3.2:3b` |
-| **GPU** | NVIDIA (tested on RTX 3050) |
-| **Browser** | Playwright Chromium (for browser skill) |
-
-<br>
-
-## 🗺 Roadmap
-
-- [x] Core engine — PolicyEngine, AgentMemory, AgentBrain
-- [x] 9 pluggable skills with 22 tools
-- [x] Interactive chat mode
-- [x] Gradio web dashboard
-- [x] 35 unit tests
-- [ ] Groq/GPT-4o API support (smarter brain)
-- [ ] Windows service auto-restart
-- [ ] Desktop notifications
-- [ ] GitHub Actions CI/CD
-- [ ] Subprocess sandbox for executor
-
-<br>
+- [x] Groq-first inference with Ollama fallback
+- [x] Crash recovery and self-healing loop
+- [x] Windows toast notifications
+- [x] Supervisor process for restart-on-crash
+- [x] Executor subprocess sandbox
+- [x] Retry and circuit-breaker hardening
+- [x] GitHub Actions CI
+- [ ] Better dashboard visuals and controls
+- [ ] Scheduled workflows and recurring jobs
+- [ ] Richer planning and multi-step task memory
 
 ---
 
 <div align="center">
 
-**Built by [Raktim Banerjee](https://github.com/rktm0604)** · BTech CSE, NIIT University (2024-28)
-
-Architecture inspired by [NVIDIA NemoClaw](https://developer.nvidia.com/blog/building-agentic-ai-applications-with-nvidia-nemoclaw/)
-
-<br>
-
-*If this agent becomes sentient, I take full responsibility.* 🤖
+Built by [Raktim Banerjee](https://github.com/rktm0604)
 
 </div>
