@@ -57,7 +57,7 @@ python run_agent.py --test-skills --cycles 2 --cycle-sleep 5
 ## Tool Handler Rules
 
 - Always return a dict with at least `{"success": True}` or `{"success": False, "error": "..."}`
-- Use `brain._infer(prompt)` for LLM calls — never call Ollama/Groq directly
+- Use `brain._infer(prompt)` for LLM calls — never call Ollama/Gemini directly
 - Use `brain.memory.observe(content, metadata)` to store anything the agent learns
 - Use `brain.policy.check("search")` before web calls — respect rate limits
 - Handle all exceptions — a crashing tool crashes the agent cycle

@@ -58,7 +58,7 @@ graph TB
 
     subgraph BRAIN["🧠 Agent Brain"]
         C["📋 Context Builder<br><i>Memory + Policy + Time</i>"]
-        D["🤖 LLM Decision Engine<br><i>Groq / Ollama</i>"]
+        D["🤖 LLM Decision Engine<br><i>Gemini / Ollama</i>"]
         E["🎯 Tool Selector<br><i>Best tool + params + reasoning</i>"]
     end
 
@@ -133,7 +133,7 @@ Semantic search over history
 **🧠 Agent Brain**
 
 LLM decision engine
-Groq API / Local Ollama
+Gemini API / Local Ollama
 Picks best tool each cycle
 
 </td>
@@ -410,7 +410,7 @@ cp env.example .env    # copy template, then fill in your values
 
 | Variable | Required | Source |
 |:---------|:--------:|:-------|
-| `GROQ_API_KEY` | ✦ Recommended | Free at [console.groq.com](https://console.groq.com) |
+| `GEMINI_API_KEY` | ✦ Recommended | Free at [aistudio.google.com/apikey](https://aistudio.google.com/apikey) |
 | `RAKBOT_GMAIL_EMAIL` | For email | Your Gmail address |
 | `RAKBOT_GMAIL_PASSWORD` | For email | [App password](https://myaccount.google.com/apppasswords) (not your real password) |
 | `GITHUB_TOKEN` | Optional | [Personal access token](https://github.com/settings/tokens) for higher API limits |
@@ -425,8 +425,8 @@ Everything lives in `config.yaml` — zero code changes needed:
 
 ```yaml
 brain:
-  provider: "groq"                     # or "ollama" for local
-  groq_model: "llama-3.1-70b-versatile"
+  provider: "gemini"                   # or "ollama" for local
+  gemini_model: "gemini-2.0-flash"
   fallback: true                       # auto-fallback to Ollama
 
 skills:
@@ -498,7 +498,7 @@ RKTM83/
 - [x] Three-layer engine (Policy · Memory · Brain)
 - [x] 10 pluggable skills with 22+ tools
 - [x] Interactive chat mode + autonomous mode
-- [x] Groq API + Ollama fallback
+- [x] Gemini API + Ollama fallback
 - [x] Process supervisor with auto-restart
 - [x] Circuit breaker for external APIs
 - [x] Gradio web dashboard
