@@ -1,301 +1,231 @@
 """
-GitHub contribution skill.
+github_skill.py — GitHub Skill
+Finds contribution opportunities, tracks repos, and discovers issues.
+Uses GitHub public API — works without a token (60 req/hr).
+Set GITHUB_TOKEN in .env for 5000 req/hr.
+
+Tools registered:
+  - find_issues        : find beginner-friendly issues to contribute to
+  - track_repo         : monitor a repo for new activity
+  - find_trending      : find trending AI/ML repos
 """
 
-from __future__ import annotations
-
-import datetime
-import logging
 import os
-import time
-
+import logging
 import requests
-
-from resilience import (
-    CircuitBreakerError,
-    api_circuit_breaker,
-    before_sleep_log,
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential,
-)
+import time
 
 logger = logging.getLogger("agent.github")
 
 SKILL_NAME = "github"
-GITHUB_API = "https://api.github.com"
 
-_CONFIG = None
+GITHUB_API  = "https://api.github.com"
+HEADERS     = {"Accept": "application/vnd.github+json"}
 
-SEARCH_TOPICS = [
-    "RAG retrieval augmented generation",
-    "autonomous agent LLM",
-    "chromadb vector database",
-    "LLaMA fine-tuning",
-    "NLP pipeline python",
-    "gradio machine learning",
-]
-
-ISSUE_LABELS = [
-    "good first issue",
-    "help wanted",
-    "beginner",
-    "easy",
-    "hacktoberfest",
-]
+# Add token if available
+_token = os.environ.get("GITHUB_TOKEN", "")
+if _token:
+    HEADERS["Authorization"] = f"Bearer {_token}"
 
 
-def set_config(full_config: dict):
-    global _CONFIG
-    _CONFIG = full_config
-
-
-def _github_headers() -> dict:
-    headers = {
-        "Accept": "application/vnd.github.v3+json",
-        "User-Agent": "RKTM83-Agent",
-    }
-    token = os.environ.get("GITHUB_TOKEN", "")
-    if token:
-        headers["Authorization"] = f"token {token}"
-    return headers
-
-
-@api_circuit_breaker("github_api", logger=logger)
-@retry(
-    wait=wait_exponential(min=1, max=30),
-    stop=stop_after_attempt(3),
-    retry=retry_if_exception_type(Exception),
-    reraise=True,
-    before_sleep=before_sleep_log(logger, logging.WARNING),
-)
-def _github_request(url: str, params: dict = None):
-    resp = requests.get(url, headers=_github_headers(), params=params, timeout=15)
-    if resp.status_code == 403:
-        raise RuntimeError("GitHub API rate limited")
-    resp.raise_for_status()
-    return resp
-
-
-def _github_get(url: str, params: dict = None) -> dict:
+def _gh_get(url: str, params: dict = {}) -> dict:
+    """Safe GitHub API GET with error handling."""
     try:
-        return _github_request(url, params).json()
-    except CircuitBreakerError as e:
-        logger.warning("GitHub circuit open: %s", e)
-        return {"error": "circuit_open"}
+        r = requests.get(url, headers=HEADERS, params=params, timeout=10)
+        if r.status_code == 200:
+            return r.json()
+        elif r.status_code == 403:
+            logger.warning("GitHub rate limit hit. Set GITHUB_TOKEN in .env for more requests.")
+        else:
+            logger.warning("GitHub API returned %d for %s", r.status_code, url)
     except Exception as e:
         logger.error("GitHub API error: %s", e)
-        return {"error": "failed"}
+    return {}
 
 
-def _search_repos(params: dict, context: dict, brain) -> dict:
-    del context
-    verdict, reason = brain.policy.check("search")
-    if verdict == "deny":
-        return {"success": False, "reason": reason}
-
-    brain.policy.record("search")
-    found = []
-
-    topic = params.get("topic", "")
-    queries = [topic] if topic else SEARCH_TOPICS[:3]
-
-    for query in queries:
-        search_url = f"{GITHUB_API}/search/repositories"
-        search_params = {
-            "q": f"{query} language:python stars:>10 pushed:>2025-01-01",
-            "sort": "updated",
-            "order": "desc",
-            "per_page": 5,
-        }
-
-        data = _github_get(search_url, search_params)
-        if "error" in data:
-            continue
-
-        for repo in data.get("items", []):
-            name = repo.get("full_name", "")
-            desc = repo.get("description", "") or ""
-            url = repo.get("html_url", "")
-            stars = repo.get("stargazers_count", 0)
-            lang = repo.get("language", "")
-
-            if not name or not url or brain.memory.has_link(url):
-                continue
-
-            found.append(
-                {
-                    "repo": name,
-                    "desc": desc[:120],
-                    "url": url,
-                    "stars": stars,
-                    "lang": lang,
-                }
-            )
-
-            brain.memory.observe(
-                f"GitHub repo: {name} - {desc[:80]}",
-                {
-                    "source": "github",
-                    "type": "repo",
-                    "title": name,
-                    "link": url,
-                    "stars": str(stars),
-                    "status": "new",
-                },
-            )
-        time.sleep(1)
-
-    logger.info("search_repos: found %d repos", len(found))
-    return {
-        "success": True,
-        "found": len(found),
-        "summary": f"Found {len(found)} repos to contribute to",
-    }
-
+# ── TOOL HANDLERS ─────────────────────────────────────────────────────────────
 
 def _find_issues(params: dict, context: dict, brain) -> dict:
-    del context
+    """
+    Find beginner-friendly open issues in AI/ML repos.
+    params: {"topic": str, "label": str, "language": str}
+    """
     verdict, reason = brain.policy.check("search")
     if verdict == "deny":
         return {"success": False, "reason": reason}
 
+    topic    = params.get("topic", "llm agent rag")
+    label    = params.get("label", "good first issue")
+    language = params.get("language", "python")
+
     brain.policy.record("search")
-    found = []
 
-    repo = params.get("repo", "")
-    labels = params.get("labels", ISSUE_LABELS[:3])
+    query = f"{topic} language:{language} label:\"{label}\""
+    data  = _gh_get(f"{GITHUB_API}/search/issues", {
+        "q":       query,
+        "sort":    "created",
+        "order":   "desc",
+        "per_page": 10,
+    })
 
-    if repo:
-        for label in labels:
-            url = f"{GITHUB_API}/repos/{repo}/issues"
-            issue_params = {
-                "labels": label,
-                "state": "open",
-                "sort": "created",
-                "direction": "desc",
-                "per_page": 5,
+    issues = []
+    for item in data.get("items", []):
+        repo_url = item.get("repository_url", "")
+        repo     = repo_url.replace(f"{GITHUB_API}/repos/", "")
+        issue    = {
+            "title":  item.get("title", ""),
+            "repo":   repo,
+            "link":   item.get("html_url", ""),
+            "labels": [l["name"] for l in item.get("labels", [])],
+            "created": item.get("created_at", "")[:10],
+        }
+        issues.append(issue)
+        brain.memory.observe(
+            f"GitHub issue: {issue['title']} in {repo}",
+            {
+                "source": "github_skill",
+                "type":   "issue",
+                "repo":   repo,
+                "link":   issue["link"],
             }
-            data = _github_get(url, issue_params)
-            if isinstance(data, dict) and "error" in data:
-                continue
-            if not isinstance(data, list):
-                continue
-            for issue in data:
-                title = issue.get("title", "")
-                link = issue.get("html_url", "")
-                if not title or not link or brain.memory.has_link(link):
-                    continue
-                found.append(
-                    {"title": title, "repo": repo, "url": link, "label": label}
-                )
-                brain.memory.observe(
-                    f"Issue: {title} in {repo}",
-                    {
-                        "source": "github",
-                        "type": "issue",
-                        "title": title,
-                        "repo": repo,
-                        "link": link,
-                        "label": label,
-                        "status": "new",
-                    },
-                )
-            time.sleep(0.5)
-    else:
-        for label in labels[:2]:
-            search_url = f"{GITHUB_API}/search/issues"
-            search_params = {
-                "q": f'label:"{label}" language:python state:open AI OR ML OR LLM',
-                "sort": "created",
-                "order": "desc",
-                "per_page": 5,
-            }
-            data = _github_get(search_url, search_params)
-            if "error" in data:
-                continue
-            for issue in data.get("items", []):
-                title = issue.get("title", "")
-                link = issue.get("html_url", "")
-                repo_url = issue.get("repository_url", "")
-                repo_name = "/".join(repo_url.split("/")[-2:]) if repo_url else ""
-                if not title or not link or brain.memory.has_link(link):
-                    continue
-                found.append(
-                    {
-                        "title": title,
-                        "repo": repo_name,
-                        "url": link,
-                        "label": label,
-                    }
-                )
-                brain.memory.observe(
-                    f"Issue: {title} in {repo_name}",
-                    {
-                        "source": "github",
-                        "type": "issue",
-                        "title": title,
-                        "repo": repo_name,
-                        "link": link,
-                        "label": label,
-                        "status": "new",
-                    },
-                )
-            time.sleep(1)
+        )
 
-    logger.info("find_issues: found %d issues", len(found))
+    logger.info("find_issues: found %d issues for '%s'", len(issues), topic)
     return {
         "success": True,
-        "found": len(found),
-        "summary": f"Found {len(found)} beginner-friendly issues",
+        "topic":   topic,
+        "found":   len(issues),
+        "issues":  issues,
     }
 
 
-def _track_contribution(params: dict, context: dict, brain) -> dict:
-    del context
-    repo = params.get("repo", "")
-    issue = params.get("issue", "")
-    url = params.get("url", "")
-    notes = params.get("notes", "")
+def _track_repo(params: dict, context: dict, brain) -> dict:
+    """
+    Monitor a GitHub repo for stars, recent commits, and open issues.
+    params: {"repo": str}  e.g. "NVIDIA/NemoClaw"
+    """
+    repo = params.get("repo", "NVIDIA/NemoClaw")
 
-    if not repo:
-        return {"success": False, "error": "repo required"}
+    data = _gh_get(f"{GITHUB_API}/repos/{repo}")
+    if not data:
+        return {"success": False, "error": f"Could not fetch repo: {repo}"}
 
-    identifier = url or f"{repo}_{issue}"
-    brain.memory.remember_entity(
-        repo,
-        "contribution",
-        identifier,
+    commits_data = _gh_get(f"{GITHUB_API}/repos/{repo}/commits", {"per_page": 3})
+    recent = [
         {
-            "issue": issue,
-            "url": url,
-            "notes": notes,
-            "tracked_at": datetime.datetime.now().isoformat(),
-        },
-    )
-    logger.info("Contribution tracked: %s - %s", repo, issue)
-    return {"success": True, "tracked": repo, "issue": issue}
+            "message": c.get("commit", {}).get("message", "").split("\n")[0][:80],
+            "author":  c.get("commit", {}).get("author", {}).get("name", ""),
+            "date":    c.get("commit", {}).get("author", {}).get("date", "")[:10],
+        }
+        for c in (commits_data if isinstance(commits_data, list) else [])
+    ]
 
+    info = {
+        "repo":         repo,
+        "stars":        data.get("stargazers_count", 0),
+        "forks":        data.get("forks_count", 0),
+        "open_issues":  data.get("open_issues_count", 0),
+        "language":     data.get("language", ""),
+        "description":  data.get("description", ""),
+        "last_push":    data.get("pushed_at", "")[:10],
+        "recent_commits": recent,
+    }
+
+    brain.memory.observe(
+        f"Repo {repo}: {info['stars']} stars, {info['open_issues']} issues",
+        {
+            "source": "github_skill",
+            "type":   "repo_snapshot",
+            "repo":   repo,
+            "stars":  str(info["stars"]),
+        }
+    )
+
+    logger.info("track_repo: %s — %d stars, %d issues",
+                repo, info["stars"], info["open_issues"])
+    return {"success": True, **info}
+
+
+def _find_trending(params: dict, context: dict, brain) -> dict:
+    """
+    Find trending Python AI/ML repos created recently.
+    params: {"topic": str, "days": int}
+    """
+    verdict, reason = brain.policy.check("search")
+    if verdict == "deny":
+        return {"success": False, "reason": reason}
+
+    topic = params.get("topic", "llm agent autonomous")
+    days  = params.get("days", 7)
+
+    brain.policy.record("search")
+
+    from datetime import datetime, timedelta
+    since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    query = f"{topic} language:python created:>{since} stars:>10"
+
+    data = _gh_get(f"{GITHUB_API}/search/repositories", {
+        "q":       query,
+        "sort":    "stars",
+        "order":   "desc",
+        "per_page": 8,
+    })
+
+    repos = []
+    for item in data.get("items", []):
+        r = {
+            "name":        item.get("full_name", ""),
+            "description": item.get("description", "")[:120],
+            "stars":       item.get("stargazers_count", 0),
+            "link":        item.get("html_url", ""),
+            "created":     item.get("created_at", "")[:10],
+        }
+        repos.append(r)
+        brain.memory.observe(
+            f"Trending: {r['name']} ({r['stars']} stars)",
+            {
+                "source": "github_skill",
+                "type":   "trending_repo",
+                "repo":   r["name"],
+                "stars":  str(r["stars"]),
+            }
+        )
+
+    logger.info("find_trending: found %d trending repos for '%s'", len(repos), topic)
+    return {
+        "success": True,
+        "topic":   topic,
+        "found":   len(repos),
+        "repos":   repos,
+    }
+
+
+# ── REGISTRATION ──────────────────────────────────────────────────────────────
 
 def register(agent):
-    agent.brain.register_tool(
-        "search_repos",
-        "Search GitHub for repos to contribute to in AI/ML and Python. "
-        "Finds recently active repos with good star counts.",
-        _search_repos,
-    )
+    """Called by run_agent.py when github skill is loaded."""
+
     agent.brain.register_tool(
         "find_issues",
-        "Find good-first-issue and help-wanted issues on GitHub. "
-        "Great for making first open source contributions.",
-        _find_issues,
-    )
-    agent.brain.register_tool(
-        "track_contribution",
-        "Store a contribution opportunity (repo + issue) in memory.",
-        _track_contribution,
+        "Find beginner-friendly open GitHub issues in AI/ML Python repos. "
+        "Use when looking for open source contribution opportunities.",
+        _find_issues
     )
 
-    logger.info("GitHub skill registered: 3 tools")
-    return agent
+    agent.brain.register_tool(
+        "track_repo",
+        "Monitor a specific GitHub repo for stars, commits, and open issues. "
+        "Use to check NVIDIA/NemoClaw or other target repos for activity.",
+        _track_repo
+    )
+
+    agent.brain.register_tool(
+        "find_trending",
+        "Find trending new Python AI/ML GitHub repos from the past week. "
+        "Use to discover new projects worth contributing to or learning from.",
+        _find_trending
+    )
+
+    # Track NemoClaw by default — relevant to this project
+    token_status = "authenticated" if _token else "unauthenticated (60 req/hr)"
+    logger.info("GitHub skill loaded: 3 tools, API %s", token_status)

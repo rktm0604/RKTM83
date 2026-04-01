@@ -1,260 +1,217 @@
 """
-Academic research skill.
-"""
+research_skill.py — Research Skill
+Finds papers, professors, labs, and research programs.
+Uses DuckDuckGo — no API key needed.
 
-from __future__ import annotations
+Tools registered:
+  - find_papers        : search recent AI/ML papers
+  - find_professors    : find professors at target institutions
+  - find_research_programs : find summer research programs in India
+"""
 
 import logging
 import time
-
-import requests
-
-from resilience import (
-    CircuitBreakerError,
-    api_circuit_breaker,
-    before_sleep_log,
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential,
-)
 
 logger = logging.getLogger("agent.research")
 
 SKILL_NAME = "research"
 
-_CONFIG = None
+# ── TOOL HANDLERS ─────────────────────────────────────────────────────────────
 
-RESEARCH_INTERESTS = [
-    "large language models",
-    "retrieval augmented generation",
-    "autonomous agents",
-    "NLP",
-    "VLSI machine learning",
-]
-
-SEARCH_QUERIES_PROFESSORS = [
-    "AI ML professor research internship India 2026",
-    "IIT professor machine learning research opportunity",
-    "NLP research lab India internship student",
-    "LLM research group accepting interns 2026",
-    "autonomous agents research lab Europe internship",
-]
-
-SEARCH_QUERIES_PAPERS = [
-    "RAG retrieval augmented generation 2025 2026",
-    "autonomous agent LLM planning 2025",
-    "NemoClaw NVIDIA agent architecture",
-    "LLaMA fine-tuning small models efficient",
-    "vector database semantic search survey",
-]
-
-SCRAPE_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-}
-
-
-def set_config(full_config: dict):
-    global _CONFIG
-    _CONFIG = full_config
-
-
-@api_circuit_breaker("semantic_scholar", logger=logger)
-@retry(
-    wait=wait_exponential(min=1, max=30),
-    stop=stop_after_attempt(3),
-    retry=retry_if_exception_type(Exception),
-    reraise=True,
-    before_sleep=before_sleep_log(logger, logging.WARNING),
-)
-def _semantic_scholar_get(url: str):
-    resp = requests.get(url, headers=SCRAPE_HEADERS, timeout=10)
-    resp.raise_for_status()
-    return resp
-
-
-def _search_professors(params: dict, context: dict, brain) -> dict:
-    del params, context
+def _find_papers(params: dict, context: dict, brain) -> dict:
+    """
+    Search for recent AI/ML papers on arXiv and semantic scholar.
+    params: {"topic": str, "max_results": int}
+    """
     verdict, reason = brain.policy.check("search")
     if verdict == "deny":
         return {"success": False, "reason": reason}
 
+    topic = params.get("topic", "large language models agents 2026")
+    max_r = params.get("max_results", 5)
+
     brain.policy.record("search")
-    found = []
+    results = []
 
     try:
-        from duckduckgo_search import DDGS
-
+        from ddgs import DDGS
+        queries = [
+            f"arxiv {topic} 2026 paper",
+            f"site:arxiv.org {topic} 2025 2026",
+        ]
         with DDGS() as ddgs:
-            for query in SEARCH_QUERIES_PROFESSORS[:3]:
-                for result in list(ddgs.text(query, max_results=5)):
-                    title = result.get("title", "")
-                    link = result.get("href", "")
-                    body = result.get("body", "")
-                    if not title or not link or brain.memory.has_link(link):
+            for query in queries[:1]:
+                for r in list(ddgs.text(query, max_results=max_r)):
+                    title = r.get("title", "")
+                    link  = r.get("href", "")
+                    body  = r.get("body", "")
+                    if not title or not link:
                         continue
-
-                    found.append(
+                    results.append({
+                        "title":   title,
+                        "link":    link,
+                        "summary": body[:200],
+                    })
+                    brain.memory.observe(
+                        f"Paper: {title}",
                         {
-                            "title": title,
-                            "link": link,
-                            "body": body[:200],
-                            "source": "search",
+                            "source": "research_skill",
+                            "type":   "paper",
+                            "topic":  topic,
+                            "link":   link,
                         }
                     )
-                    brain.memory.observe(
-                        f"Research: {title} - {body[:100]}",
-                        {
-                            "source": "research_search",
-                            "type": "professor",
-                            "title": title,
-                            "link": link,
-                            "status": "new",
-                        },
-                    )
-                time.sleep(1)
     except Exception as e:
-        logger.error("Professor search error: %s", e)
+        logger.error("find_papers error: %s", e)
+        return {"success": False, "error": str(e)}
 
-    logger.info("search_professors: found %d results", len(found))
+    logger.info("find_papers: found %d results for '%s'", len(results), topic)
     return {
         "success": True,
-        "found": len(found),
-        "summary": f"Found {len(found)} professor/lab results",
+        "found":   len(results),
+        "topic":   topic,
+        "results": results,
     }
 
 
-def _search_papers(params: dict, context: dict, brain) -> dict:
-    del params, context
+def _find_professors(params: dict, context: dict, brain) -> dict:
+    """
+    Find professors at target institutions working on relevant topics.
+    params: {"institution": str, "topic": str}
+    """
     verdict, reason = brain.policy.check("search")
     if verdict == "deny":
         return {"success": False, "reason": reason}
+
+    institution = params.get("institution", "IIT")
+    topic       = params.get("topic", "AI ML deep learning")
 
     brain.policy.record("search")
     found = []
 
     try:
-        for interest in RESEARCH_INTERESTS[:3]:
-            url = (
-                "https://api.semanticscholar.org/graph/v1/paper/search"
-                f"?query={requests.utils.quote(interest)}"
-                "&limit=5&fields=title,url,year,abstract"
-            )
-            try:
-                resp = _semantic_scholar_get(url)
-            except CircuitBreakerError as e:
-                logger.warning("Semantic Scholar circuit open: %s", e)
-                break
-
-            data = resp.json()
-            for paper in data.get("data", []):
-                title = paper.get("title", "")
-                link = paper.get("url", "")
-                year = paper.get("year", "")
-                abstract = paper.get("abstract", "") or ""
-
-                if not title or brain.memory.has_link(link):
-                    continue
-
-                found.append(
-                    {
-                        "title": title,
-                        "link": link,
-                        "year": year,
-                        "abstract": abstract[:200],
-                    }
-                )
-                brain.memory.observe(
-                    f"Paper: {title} ({year})",
-                    {
-                        "source": "semantic_scholar",
-                        "type": "paper",
-                        "title": title,
-                        "link": link,
-                        "year": str(year),
-                        "status": "new",
-                    },
-                )
-            time.sleep(1)
-    except Exception as e:
-        logger.error("Semantic Scholar search error: %s", e)
-
-    try:
-        from duckduckgo_search import DDGS
-
+        from ddgs import DDGS
+        query = f"{institution} professor {topic} research lab India 2026 email"
         with DDGS() as ddgs:
-            for query in SEARCH_QUERIES_PAPERS[:2]:
-                for result in list(ddgs.text(query + " arxiv", max_results=3)):
-                    title = result.get("title", "")
-                    link = result.get("href", "")
-                    if not title or not link or brain.memory.has_link(link):
-                        continue
-                    found.append({"title": title, "link": link, "source": "search"})
-                    brain.memory.observe(
-                        f"Paper (web): {title}",
-                        {
-                            "source": "duckduckgo",
-                            "type": "paper",
-                            "title": title,
-                            "link": link,
-                            "status": "new",
-                        },
+            for r in list(ddgs.text(query, max_results=5)):
+                title = r.get("title", "")
+                link  = r.get("href", "")
+                body  = r.get("body", "")
+                if not title:
+                    continue
+                # Score relevance — prefer faculty pages
+                if any(k in link.lower() for k in ["faculty", "people", "professor", "staff"]):
+                    found.append({"name": title, "link": link, "context": body[:150]})
+                    brain.memory.remember(
+                        title, "professor", link,
+                        {"institution": institution, "topic": topic}
                     )
     except Exception as e:
-        logger.error("DuckDuckGo paper search error: %s", e)
+        logger.error("find_professors error: %s", e)
+        return {"success": False, "error": str(e)}
 
-    logger.info("search_papers: found %d results", len(found))
+    logger.info("find_professors: found %d at %s", len(found), institution)
     return {
-        "success": True,
-        "found": len(found),
-        "summary": f"Found {len(found)} papers",
+        "success":     True,
+        "institution": institution,
+        "topic":       topic,
+        "found":       len(found),
+        "professors":  found,
     }
 
 
-def _track_lab(params: dict, context: dict, brain) -> dict:
-    del context
-    name = params.get("name", "")
-    institution = params.get("institution", "")
-    url = params.get("url", "")
-    notes = params.get("notes", "")
+def _find_research_programs(params: dict, context: dict, brain) -> dict:
+    """
+    Find summer research programs, fellowships, and internships in India.
+    params: {"field": str}
+    """
+    verdict, reason = brain.policy.check("search")
+    if verdict == "deny":
+        return {"success": False, "reason": reason}
 
-    if not name:
-        return {"success": False, "error": "name required"}
+    field = params.get("field", "computer science AI ML")
+    brain.policy.record("search")
+    programs = []
 
-    identifier = url or f"{name}_{institution}"
-    brain.memory.remember_entity(
-        name,
-        "lab",
-        identifier,
-        {
-            "institution": institution,
-            "url": url,
-            "notes": notes,
-            "tracked_at": __import__("datetime").datetime.now().isoformat(),
-        },
-    )
-    logger.info("Lab tracked: %s @ %s", name, institution)
-    return {"success": True, "tracked": name, "institution": institution}
+    try:
+        from ddgs import DDGS
+        queries = [
+            f"summer research program India 2026 {field} undergraduate stipend",
+            f"IIT IISC IIIT research fellowship 2026 {field} application open",
+            f"SURGE SRFP MITACS 2026 {field} India student",
+        ]
+        with DDGS() as ddgs:
+            for query in queries:
+                for r in list(ddgs.text(query, max_results=3)):
+                    title = r.get("title", "")
+                    link  = r.get("href", "")
+                    body  = r.get("body", "")
+                    if not title or not link:
+                        continue
+                    if any(k in (title + body).lower() for k in
+                           ["research", "fellowship", "intern", "stipend", "program"]):
+                        programs.append({
+                            "title":   title,
+                            "link":    link,
+                            "details": body[:200],
+                        })
+                        brain.memory.observe(
+                            f"Research program: {title}",
+                            {
+                                "source": "research_skill",
+                                "type":   "program",
+                                "field":  field,
+                                "link":   link,
+                            }
+                        )
+                time.sleep(1)
+    except Exception as e:
+        logger.error("find_research_programs error: %s", e)
+        return {"success": False, "error": str(e)}
 
+    logger.info("find_research_programs: found %d programs", len(programs))
+    return {
+        "success":  True,
+        "field":    field,
+        "found":    len(programs),
+        "programs": programs,
+    }
+
+
+# ── REGISTRATION ──────────────────────────────────────────────────────────────
 
 def register(agent):
+    """Called by run_agent.py when research skill is loaded."""
+
+    # Graceful check for required package
+    try:
+        from ddgs import DDGS
+    except ImportError:
+        logger.warning(
+            "research_skill: duckduckgo-search not installed. "
+            "Run: pip install duckduckgo-search"
+        )
+        return
+
     agent.brain.register_tool(
-        "search_professors",
-        "Search for professors and research labs offering AI/ML internships. "
-        "Use when looking for academic research opportunities.",
-        _search_professors,
-    )
-    agent.brain.register_tool(
-        "search_papers",
-        "Search for recent AI/ML papers on Semantic Scholar and the web. "
-        "Use to stay updated on research trends.",
-        _search_papers,
-    )
-    agent.brain.register_tool(
-        "track_lab",
-        "Store a professor, lab, or research group in memory for follow-up.",
-        _track_lab,
+        "find_papers",
+        "Search for recent AI/ML research papers on arXiv. "
+        "Use when the user asks about papers or wants to stay updated on research.",
+        _find_papers
     )
 
-    logger.info("Research skill registered: 3 tools")
-    return agent
+    agent.brain.register_tool(
+        "find_professors",
+        "Find professors at IITs, IISc, IIITs working on relevant AI/ML topics. "
+        "Use when looking for research internship supervisors to cold email.",
+        _find_professors
+    )
+
+    agent.brain.register_tool(
+        "find_research_programs",
+        "Find summer research programs, fellowships, and stipended internships in India. "
+        "Use when looking for academic research opportunities beyond job portals.",
+        _find_research_programs
+    )
+
+    logger.info("Research skill loaded: 3 tools registered")
