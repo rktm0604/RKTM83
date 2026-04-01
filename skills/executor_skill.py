@@ -22,13 +22,18 @@ SKILL_NAME = "executor"
 _CONFIG = None
 
 DANGEROUS_PATTERNS = [
-    r"os\.system",
-    r"subprocess",
-    r"shutil\.rmtree",
+    r"import\s+os\b",
+    r"from\s+os\s+import",
+    r"os\.",
+    r"import\s+sys\b",
+    r"from\s+sys\s+import",
+    r"import\s+subprocess",
+    r"import\s+shutil",
+    r"import\s+pty",
     r"__import__",
     r"eval\s*\(",
     r"exec\s*\(",
-    r"open\s*\(.*(w|a)",
+    r"open\s*\(",
     r"import\s+ctypes",
     r"import\s+socket",
 ]
@@ -55,10 +60,7 @@ def _get_timeout() -> int:
 
 def _check_safety(code: str) -> tuple:
     """
-    Advisory-only safety diagnostics.
-
-    The subprocess sandbox is now the execution boundary, but keeping this
-    helper makes tests and warnings more informative for risky snippets.
+    Checks the code for dangerous patterns and blocks execution.
     """
 
     if _allow_dangerous():
@@ -126,11 +128,12 @@ def _run_code(params: dict, context: dict, brain) -> dict:
 
     safe, reason = _check_safety(code)
     if not safe:
-        logger.warning("Executor advisory warning: %s", reason)
+        logger.warning("Executor blocked: %s", reason)
         brain.memory.observe(
-            f"Executor advisory warning: {reason}",
+            f"Executor blocked: {reason}",
             {"source": "executor", "type": "warning", "reason": reason},
         )
+        return {"success": False, "error": f"Security block: {reason}"}
 
     wrapped_code = _build_subprocess_code(code)
     temp_path = None

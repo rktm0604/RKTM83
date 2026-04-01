@@ -35,7 +35,7 @@ class TestExecutorSafety:
     def test_flags_os_system_pattern(self):
         safe, reason = executor_skill._check_safety("import os\nos.system('dir')")
         assert safe is False
-        assert "os.system" in reason
+        assert "import os" in reason
 
 
 class TestExecutorSandbox:

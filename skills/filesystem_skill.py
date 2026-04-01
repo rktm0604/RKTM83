@@ -28,6 +28,15 @@ _CONFIG = None
 
 # ── EXTENSION CATEGORIES ─────────────────────────────────────────────────────
 
+WORKSPACE_ROOT = Path("~/RKTM83_WORKSPACE").expanduser().resolve()
+WORKSPACE_ROOT.mkdir(parents=True, exist_ok=True)
+
+def _is_safe_path(target: Path) -> bool:
+    try:
+        return target.resolve().is_relative_to(WORKSPACE_ROOT)
+    except Exception:
+        return False
+
 EXTENSION_MAP = {
     "Images":    [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".svg", ".webp", ".ico"],
     "Videos":    [".mp4", ".avi", ".mkv", ".mov", ".wmv", ".flv", ".webm"],
@@ -66,6 +75,8 @@ def _list_files(params: dict, context: dict, brain) -> dict:
     max_items = min(int(params.get("max_items", 50)), 200)
 
     target = Path(path).expanduser().resolve()
+    if not _is_safe_path(target):
+        return {"success": False, "error": f"Security block: Path is outside allowed workspace {WORKSPACE_ROOT}"}
     if not target.exists():
         return {"success": False, "error": f"Path not found: {target}"}
     if not target.is_dir():
@@ -115,6 +126,8 @@ def _read_file(params: dict, context: dict, brain) -> dict:
         return {"success": False, "error": "path required"}
 
     target = Path(path).expanduser().resolve()
+    if not _is_safe_path(target):
+        return {"success": False, "error": f"Security block: Path is outside allowed workspace {WORKSPACE_ROOT}"}
     if not target.exists():
         return {"success": False, "error": f"File not found: {target}"}
     if not target.is_file():
@@ -162,6 +175,9 @@ def _move_file(params: dict, context: dict, brain) -> dict:
     src = Path(source).expanduser().resolve()
     dst = Path(destination).expanduser().resolve()
 
+    if not _is_safe_path(src) or not _is_safe_path(dst):
+        return {"success": False, "error": f"Security block: Source and destination must be inside RKTM83_WORKSPACE ({WORKSPACE_ROOT})"}
+
     if not src.exists():
         return {"success": False, "error": f"Source not found: {src}"}
 
@@ -185,12 +201,15 @@ def _move_file(params: dict, context: dict, brain) -> dict:
 def _organize_folder(params: dict, context: dict, brain) -> dict:
     """
     Auto-sort files in a folder into sub-folders by extension category.
-    params: {"path": str (default ~/Downloads), "dry_run": bool (default true)}
+    params: {"path": str (default ~/RKTM83_WORKSPACE/Downloads), "dry_run": bool (default true)}
     """
-    path = params.get("path", str(Path.home() / "Downloads"))
+    path = params.get("path", str(WORKSPACE_ROOT / "Downloads"))
     dry_run = params.get("dry_run", True)
 
     target = Path(path).expanduser().resolve()
+    if not _is_safe_path(target):
+        return {"success": False, "error": f"Security block: Cannot organize outside RKTM83_WORKSPACE ({WORKSPACE_ROOT})"}
+
     if not target.exists() or not target.is_dir():
         return {"success": False, "error": f"Not a directory: {target}"}
 

@@ -21,6 +21,7 @@ class DummyBrain:
 
 
 def test_organize_folder_dry_run(tmp_path):
+    filesystem_skill.WORKSPACE_ROOT = tmp_path
     (tmp_path / "photo.jpg").write_text("image", encoding="utf-8")
     (tmp_path / "notes.txt").write_text("text", encoding="utf-8")
     (tmp_path / "script.py").write_text("print('hi')", encoding="utf-8")

@@ -57,8 +57,8 @@ def set_config(full_config: dict):
     _CONFIG = full_config
 
 
-def _resolve_app(name: str) -> str:
-    """Resolve app name to executable path."""
+def _resolve_app(name: str) -> str | None:
+    """Resolve app name to executable path. Only allows KNOWN_APPS."""
     name_lower = name.lower().strip()
 
     # Check known apps
@@ -69,8 +69,8 @@ def _resolve_app(name: str) -> str:
             path = path.replace("{user}", os.environ.get("USERNAME", ""))
         return path
 
-    # Try as-is (user might pass a full path or exe name)
-    return name
+    # Security block: Do not allow arbitrary paths or unapproved executables.
+    return None
 
 
 # ── TOOL HANDLERS ─────────────────────────────────────────────────────────────
@@ -87,6 +87,13 @@ def _open_app(params: dict, context: dict, brain) -> dict:
         return {"success": False, "error": "app name required"}
 
     exe = _resolve_app(app_name)
+    if not exe:
+        logger.warning("Desktop blocked launching unapproved app: %s", app_name)
+        brain.memory.observe(
+            f"Blocked unapproved app launch: {app_name}",
+            {"source": "desktop", "type": "warning", "reason": "Not in KNOWN_APPS"}
+        )
+        return {"success": False, "error": f"App '{app_name}' is not an approved application in KNOWN_APPS whitelist. To run it, add it to KNOWN_APPS inside desktop_skill.py."}
 
     try:
         cmd_parts = [exe]
