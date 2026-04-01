@@ -33,11 +33,6 @@ from resilience import (
 )
 
 try:
-    from groq import Groq
-except ImportError:  # pragma: no cover - dependency shim
-    Groq = None
-
-try:
     from google import genai
 except ImportError:  # pragma: no cover - dependency shim
     genai = None
@@ -58,7 +53,6 @@ except Exception:  # pragma: no cover - best-effort logging
 
 INFERENCE_ENDPOINT = "http://localhost:11434/api/generate"
 DEFAULT_OLLAMA_MODEL = "llama3.2:3b"
-DEFAULT_GROQ_MODEL = "llama-3.1-70b-versatile"
 DEFAULT_GEMINI_MODEL = "gemini-2.0-flash"
 INFERENCE_TIMEOUT = 30
 
@@ -339,7 +333,6 @@ class AgentBrain:
         self.profile = profile
         self.config = config or {}
         self._tools = {}
-        self._groq_client = None
         self._gemini_client = None
         logger.info("AgentBrain ready")
 
@@ -352,39 +345,9 @@ class AgentBrain:
         return {
             "provider": settings.get("provider", "gemini").lower(),
             "gemini_model": settings.get("gemini_model", DEFAULT_GEMINI_MODEL),
-            "groq_model": settings.get("groq_model", DEFAULT_GROQ_MODEL),
             "ollama_model": settings.get("ollama_model", DEFAULT_OLLAMA_MODEL),
             "fallback": settings.get("fallback", True),
         }
-
-    def _get_groq_client(self):
-        if self._groq_client is not None:
-            return self._groq_client
-
-        api_key = os.environ.get("GROQ_API_KEY", "").strip()
-        if not api_key:
-            raise RuntimeError("GROQ_API_KEY is not set")
-        if Groq is None:
-            raise RuntimeError("groq package is not installed")
-
-        self._groq_client = Groq(api_key=api_key)
-        return self._groq_client
-
-    @api_circuit_breaker("groq_api", logger=logger)
-    @retry(
-        wait=wait_exponential(min=1, max=30),
-        stop=stop_after_attempt(3),
-        retry=retry_if_exception_type(Exception),
-        reraise=True,
-        before_sleep=before_sleep_log(logger, logging.WARNING),
-    )
-    def _call_groq(self, prompt: str, model: str) -> str:
-        client = self._get_groq_client()
-        response = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return (response.choices[0].message.content or "").strip()
 
     @api_circuit_breaker("ollama_api", logger=logger)
     @retry(
@@ -443,19 +406,15 @@ class AgentBrain:
         settings = self._brain_settings()
         provider = settings["provider"]
 
-        # Build fallback chain
+        # Build fallback chain: gemini → ollama
         providers = [provider]
-        if settings["fallback"]:
-            for fb in ["gemini", "groq", "ollama"]:
-                if fb not in providers:
-                    providers.append(fb)
+        if settings["fallback"] and "ollama" not in providers:
+            providers.append("ollama")
 
         for candidate in providers:
             try:
                 if candidate == "gemini":
                     return self._call_gemini(prompt, settings["gemini_model"])
-                elif candidate == "groq":
-                    return self._call_groq(prompt, settings["groq_model"])
                 else:
                     return self._call_ollama(prompt, settings["ollama_model"])
             except CircuitBreakerError as e:

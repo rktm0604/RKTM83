@@ -65,11 +65,10 @@ skills:
   # - custom     # skills/custom_skill.py     (your own)
 
 brain:
-  provider: "gemini"                    # "gemini", "groq", or "ollama"
+  provider: "gemini"                    # "gemini" or "ollama"
   gemini_model: "gemini-2.0-flash"
-  groq_model: "llama-3.1-70b-versatile"
   ollama_model: "llama3.2:3b"
-  fallback: true                        # chain: gemini → groq → ollama
+  fallback: true                        # falls back to ollama if gemini fails
 
 notifications:
   enabled: true
