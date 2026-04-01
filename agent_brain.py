@@ -37,6 +37,11 @@ try:
 except ImportError:  # pragma: no cover - dependency shim
     Groq = None
 
+try:
+    from google import genai
+except ImportError:  # pragma: no cover - dependency shim
+    genai = None
+
 
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 
@@ -54,6 +59,7 @@ except Exception:  # pragma: no cover - best-effort logging
 INFERENCE_ENDPOINT = "http://localhost:11434/api/generate"
 DEFAULT_OLLAMA_MODEL = "llama3.2:3b"
 DEFAULT_GROQ_MODEL = "llama-3.1-70b-versatile"
+DEFAULT_GEMINI_MODEL = "gemini-2.0-flash"
 INFERENCE_TIMEOUT = 30
 
 
@@ -334,6 +340,7 @@ class AgentBrain:
         self.config = config or {}
         self._tools = {}
         self._groq_client = None
+        self._gemini_client = None
         logger.info("AgentBrain ready")
 
     def register_tool(self, name: str, description: str, handler):
@@ -343,7 +350,8 @@ class AgentBrain:
     def _brain_settings(self) -> dict:
         settings = self.config.get("brain", {})
         return {
-            "provider": settings.get("provider", "ollama").lower(),
+            "provider": settings.get("provider", "gemini").lower(),
+            "gemini_model": settings.get("gemini_model", DEFAULT_GEMINI_MODEL),
             "groq_model": settings.get("groq_model", DEFAULT_GROQ_MODEL),
             "ollama_model": settings.get("ollama_model", DEFAULT_OLLAMA_MODEL),
             "fallback": settings.get("fallback", True),
@@ -395,6 +403,35 @@ class AgentBrain:
         response.raise_for_status()
         return response.json().get("response", "").strip()
 
+    def _get_gemini_client(self):
+        if self._gemini_client is not None:
+            return self._gemini_client
+
+        api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+        if not api_key:
+            raise RuntimeError("GEMINI_API_KEY is not set")
+        if genai is None:
+            raise RuntimeError("google-genai package is not installed")
+
+        self._gemini_client = genai.Client(api_key=api_key)
+        return self._gemini_client
+
+    @api_circuit_breaker("gemini_api", logger=logger)
+    @retry(
+        wait=wait_exponential(min=1, max=30),
+        stop=stop_after_attempt(3),
+        retry=retry_if_exception_type(Exception),
+        reraise=True,
+        before_sleep=before_sleep_log(logger, logging.WARNING),
+    )
+    def _call_gemini(self, prompt: str, model: str) -> str:
+        client = self._get_gemini_client()
+        response = client.models.generate_content(
+            model=model,
+            contents=prompt,
+        )
+        return (response.text or "").strip()
+
     def _infer(self, prompt: str) -> str:
         verdict, reason = self.policy.check("inference")
         if verdict == self.policy.DENY:
@@ -405,24 +442,31 @@ class AgentBrain:
 
         settings = self._brain_settings()
         provider = settings["provider"]
+
+        # Build fallback chain
         providers = [provider]
-        if provider != "ollama" and settings["fallback"]:
-            providers.append("ollama")
-        elif provider == "ollama":
-            providers = ["ollama"]
+        if settings["fallback"]:
+            for fb in ["gemini", "groq", "ollama"]:
+                if fb not in providers:
+                    providers.append(fb)
 
         for candidate in providers:
             try:
-                if candidate == "groq":
+                if candidate == "gemini":
+                    return self._call_gemini(prompt, settings["gemini_model"])
+                elif candidate == "groq":
                     return self._call_groq(prompt, settings["groq_model"])
-                return self._call_ollama(prompt, settings["ollama_model"])
+                else:
+                    return self._call_ollama(prompt, settings["ollama_model"])
             except CircuitBreakerError as e:
                 logger.warning("%s circuit open: %s", candidate, e)
             except Exception as e:
                 logger.warning("%s inference failed: %s", candidate, e)
 
-            if candidate == "groq" and settings["fallback"]:
-                logger.info("Falling back to Ollama inference")
+            if len(providers) > 1:
+                next_idx = providers.index(candidate) + 1
+                if next_idx < len(providers):
+                    logger.info("Falling back to %s", providers[next_idx])
 
         return ""
 
