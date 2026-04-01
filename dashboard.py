@@ -26,7 +26,33 @@ except ImportError:
     print("ERROR: pyyaml not installed. Run: pip install pyyaml")
     raise
 
-from agent_brain import AgentMemory, PolicyEngine
+from agent_brain import AgentMemory, PolicyEngine, Agent
+from run_agent import build_profile, load_skills, CONFIG
+import re
+
+_AGENT = None
+
+def get_agent():
+    """Initialize or return the global Agent instance."""
+    global _AGENT
+    if _AGENT is not None:
+        return _AGENT
+    
+    cfg = CONFIG.get("agent", {})
+    overrides = {k: v for k, v in CONFIG.get("policy", {}).items() if k != "search_interval_hours"}
+    
+    _AGENT = Agent(
+        name=cfg.get("name", "RKTM83"),
+        profile=build_profile(CONFIG),
+        memory_path=cfg.get("memory_path", "./rktm83_memory"),
+        policy_overrides=overrides,
+        state_path="policy_state.json",
+        config=CONFIG,
+        agent_state_path="agent_state.json",
+    )
+    _AGENT.context["config"] = CONFIG
+    load_skills(_AGENT, CONFIG)
+    return _AGENT
 
 
 def load_config():
@@ -156,6 +182,81 @@ def get_config():
         return f"Error reading config: {e}"
 
 
+# ── TAB: Chat / Command ──────────────────────────────────────────────────────
+
+def chat_with_agent(message, history):
+    """Gradio ChatInterface handler to execute an agent cycle."""
+    try:
+        agent = get_agent()
+    except Exception as e:
+        return f"❌ Failed to load agent: {str(e)}"
+        
+    user_input = message.strip()
+    if not user_input:
+        return "Please enter a command."
+
+    # Build context
+    agent.context.update({
+        "time": datetime.datetime.now().isoformat(),
+        "memory": agent.memory.stats(),
+        "policy": agent.policy.status(),
+        "user_request": user_input,
+    })
+
+    tools_str = "\n".join(f"- {n}: {i['description']}" for n, i in agent.brain._tools.items())
+    prompt = f"{agent.brain.profile}\n\nUSER REQUEST: {user_input}\n\nTOOLS:\n{tools_str}\n\nPick the BEST tool for this request.\nReply ONLY in JSON: {{\"tool\": \"name\", \"params\": {{}}, \"reasoning\": \"one line\"}}"
+
+    response = agent.brain._infer(prompt)
+
+    # Parse JSON
+    decision = None
+    try:
+        clean = re.sub(r'```(?:json)?', '', response).strip()
+        m = re.search(r'\{.*\}', clean, re.DOTALL)
+        if m:
+            d = json.loads(m.group())
+            if d.get("tool") in agent.brain._tools:
+                decision = d
+    except Exception:
+        pass
+
+    if not decision:
+        return f"❌ **Agent couldn't decide.** Raw LLM response:\n```\n{response[:300]}\n```"
+
+    tool = decision.get("tool")
+    params = decision.get("params", {})
+    reasoning = decision.get("reasoning", "")
+
+    # Output log
+    out = f"**💭 Reasoning:** {reasoning}\n\n**🛠️ Selected Tool:** `{tool}`\n\n```json\n{json.dumps(params, indent=2)}\n```\n\n"
+
+    # Execute
+    result = agent.brain.execute(decision, agent.context)
+
+    # Display result
+    out += "### Result\n"
+    if result.get("success"):
+        out += "✅ **Success**\n\n"
+        for k, v in result.items():
+            if k == "success":
+                continue
+            v_str = str(v)
+            if len(v_str) > 500:
+                v_str = v_str[:500] + "..."
+            out += f"- **{k}**: {v_str}\n"
+    else:
+        out += f"❌ **Failed**: {result.get('error', 'unknown error')}"
+
+    # Record Memory
+    agent.memory.observe(
+        f"chat: {user_input[:60]} → {tool}",
+        {"tool": tool, "source": "chat"}
+    )
+    agent.context["last_action"] = tool
+
+    return out
+
+
 # ── BUILD DASHBOARD ─────────────────────────────────────────────────────────
 
 def build_dashboard():
@@ -177,6 +278,14 @@ def build_dashboard():
         gr.Markdown("*Personal Autonomous Agent · NemoClaw-inspired*")
 
         with gr.Tabs():
+
+            # ── Chat Tab
+            with gr.Tab("💬 Command Center"):
+                gr.ChatInterface(
+                    fn=chat_with_agent,
+                    examples=["List files in my downloads folder", "What time is it?", "Check my recent memory for keywords"],
+                    type="messages"
+                )
 
             # ── Status Tab
             with gr.Tab("📊 Status"):
