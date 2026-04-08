@@ -282,8 +282,8 @@ def register(agent):
     )
     agent.brain.register_tool(
         "organize_folder",
-        "Auto-sort files in a folder into sub-folders by type "
-        "(Images, Videos, Documents, Code, etc.). "
+        "Auto-sort files in a folder into sub-folders by type. "
+        "Requires params: {'path': 'string path', 'dry_run': bool}. "
         "Defaults to dry_run=true — shows plan without moving. "
         "Set dry_run=false to actually organize.",
         _organize_folder

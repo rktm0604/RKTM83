@@ -48,7 +48,14 @@ KNOWN_APPS = {
     "code":        "code",
     "word":        "winword.exe",
     "excel":       "excel.exe",
+    "powerpoint":  "powerpnt.exe",
     "spotify":     r"C:\Users\{user}\AppData\Roaming\Spotify\Spotify.exe",
+    "microsoft word": "winword.exe",
+    "microsoft excel": "excel.exe",
+    "microsoft powerpoint": "powerpnt.exe",
+    "wps":         r"C:\Program Files (x86)\WPS Office\10.1.0.6714\office6\wps.exe",
+    "wpse":        r"C:\Program Files (x86)\WPS Office\10.1.0.6714\office6\et.exe",
+    "wpp":         r"C:\Program Files (x86)\WPS Office\10.1.0.6714\office6\wpp.exe",
 }
 
 
@@ -77,10 +84,11 @@ def _resolve_app(name: str) -> str | None:
 
 def _open_app(params: dict, context: dict, brain) -> dict:
     """
-    Open an application by name.
-    params: {"app": str, "args": str (optional)}
+    Open an application by name, optionally with a file.
+    params: {"app": str, "file_path": str (optional), "args": str (optional)}
     """
     app_name = params.get("app", "")
+    file_path = params.get("file_path", "")
     args = params.get("args", "")
 
     if not app_name:
@@ -93,20 +101,65 @@ def _open_app(params: dict, context: dict, brain) -> dict:
             f"Blocked unapproved app launch: {app_name}",
             {"source": "desktop", "type": "warning", "reason": "Not in KNOWN_APPS"}
         )
-        return {"success": False, "error": f"App '{app_name}' is not an approved application in KNOWN_APPS whitelist. To run it, add it to KNOWN_APPS inside desktop_skill.py."}
+        return {"success": False, "error": f"App '{app_name}' is not in approved apps. Add it to KNOWN_APPS in desktop_skill.py."}
 
     try:
-        cmd_parts = [exe]
-        if args:
-            cmd_parts.extend(args.split())
-
+        # If file_path is provided, try to open it
+        if file_path:
+            # Convert to Windows path - handle both forward and back slashes
+            win_path = file_path.replace("/", "\\")
+            
+            # Expand user home directory if ~ is used
+            if win_path.startswith("~"):
+                win_path = os.path.expanduser(win_path)
+            
+            # Check if file exists first
+            if not os.path.exists(win_path):
+                # Try to find the file in common locations
+                filename = os.path.basename(win_path)
+                possible_paths = [
+                    win_path,
+                    os.path.join(os.path.expanduser("~"), "Downloads", filename),
+                    os.path.join(os.path.expanduser("~"), "Desktop", filename),
+                    os.path.join(os.path.expanduser("~"), "Documents", filename),
+                ]
+                
+                for p in possible_paths:
+                    if os.path.exists(p):
+                        win_path = p
+                        break
+                else:
+                    return {"success": False, "error": f"File not found: {win_path}. Checked: {possible_paths}"}
+            
+            # Try to open the file with the associated app
+            try:
+                # Method 1: Use startfile for the file
+                os.startfile(win_path)
+                brain.memory.observe(
+                    f"Opened file: {file_path} with {app_name}",
+                    {"source": "desktop", "type": "file_open", "app": app_name, "file": win_path}
+                )
+                logger.info("Opened file: %s", win_path)
+                return {"success": True, "app": app_name, "file": win_path, "method": "startfile"}
+            except Exception as e:
+                # Method 2: Try opening the app and then the file
+                logger.warning("startfile failed: %s, trying subprocess", e)
+                try:
+                    subprocess.Popen([exe], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    time.sleep(2)
+                    os.startfile(win_path)
+                    return {"success": True, "app": app_name, "file": win_path, "method": "app+startfile"}
+                except Exception as e2:
+                    return {"success": False, "error": f"Could not open {file_path}: {e2}"}
+        
+        # No file, just open the app
         subprocess.Popen(
-            cmd_parts,
+            [exe],
             shell=False,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        time.sleep(1)  # Give the app a moment to launch
+        time.sleep(1)
 
         brain.memory.observe(
             f"Opened app: {app_name}",
@@ -116,15 +169,7 @@ def _open_app(params: dict, context: dict, brain) -> dict:
         return {"success": True, "app": app_name, "exe": exe}
 
     except FileNotFoundError:
-        try:
-            if hasattr(os, "startfile") and not args:
-                os.startfile(exe)
-                time.sleep(1)
-                logger.info("Opened via os.startfile: %s", app_name)
-                return {"success": True, "app": app_name, "method": "startfile"}
-            return {"success": False, "error": f"Could not open {app_name}: executable not found"}
-        except Exception as e2:
-            return {"success": False, "error": f"Could not open {app_name}: {e2}"}
+        return {"success": False, "error": f"Could not open {app_name}: executable not found"}
     except Exception as e:
         logger.error("open_app error: %s", e)
         return {"success": False, "error": str(e)}
@@ -210,8 +255,8 @@ def register(agent):
     """Called by agent.load_skill(desktop_skill)."""
     agent.brain.register_tool(
         "open_app",
-        "Open an application by name (e.g. 'notepad', 'chrome', 'vscode', 'calculator'). "
-        "Use to launch any program on the computer.",
+        "Open an application by name (e.g. 'notepad', 'chrome', 'vscode', 'calculator', 'word'). "
+        "Use to launch any program on the computer. Optionally specify a file to open with it.",
         _open_app
     )
     agent.brain.register_tool(

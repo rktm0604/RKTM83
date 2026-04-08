@@ -17,7 +17,8 @@
 [![License](https://img.shields.io/badge/License-MIT-22c55e?style=flat-square)](LICENSE)
 [![Status](https://img.shields.io/badge/Status-Active-brightgreen?style=flat-square)]()
 [![Skills](https://img.shields.io/badge/Skills-10_Modules-8b5cf6?style=flat-square)]()
-[![Tools](https://img.shields.io/badge/Tools-22+-06b6d4?style=flat-square)]()
+[![Tools](https://img.shields.io/badge/Tools-40+-06b6d4?style=flat-square)]()
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-ff9900?style=flat-square)]()
 
 </div>
 
@@ -25,204 +26,315 @@
 
 ## 📖 Overview
 
-- **RKTM83** is a local autonomous agent designed to run on your computer.
-- It uses a modular skill system, a reasoning LLM (Gemini by default), and persistent vector memory (ChromaDB).
-- **Think of it like JARVIS:** provide high-level requests, and the agent plans, selects tools, executes tasks, and remembers results.
+**RKTM83** is a production-ready autonomous AI agent that runs locally on your machine. Inspired by NVIDIA NemoClaw, it's your personal AI assistant that can:
+
+- 🌐 **Browse websites** (with visible browser window!)
+- 🔍 **Search the web** (DuckDuckGo → Google → Bing)
+- 📁 **Manage files** (list, read, move, organize)
+- 📧 **Handle emails** (read, send, draft)
+- 💻 **Execute code** (Python in sandbox)
+- 🔬 **Research papers** (Semantic Scholar)
+- 🐙 **GitHub integration** (issues, trending)
+- 💼 **Job search** (internships, opportunities)
+- 💻 **Control desktop** (open apps, type, screenshot)
 
 ---
 
-## ✨ Key features
+## ✨ Key Features
 
-### Architecture
-- **Modular skill-based design** — add or remove skills without touching core code.
-- **Runs locally** with cloud LLMs (Gemini) or fully local models (Ollama).
-- **Persistent semantic memory** with ChromaDB.
+### 🎯 Smart Tool Execution
+- **Forced execution** - Agent actually performs actions, not just talks about them
+- **Auto-detection** - Detects action keywords and executes appropriate tools
+- **Multiple fallback** - Search engines, tools all have backups
 
-### Safety & control
-- **Policy engine** with allow/deny rules and rate limits.
-- **Human approval gates** for sensitive actions (e.g., sending email).
-- **Sandboxed dynamic Python execution** (timeouts and process isolation).
+### 🌐 Browser Automation
+- **Visible mode** - See the browser window open!
+- **Auto-scroll, screenshot, form filling**
+- **Multi-step automation workflows**
+- **CSS selector content extraction**
 
-### Developer experience
-- **Zero-code configuration** — tune behavior via `config.yaml`.
-- **Pluggable skill template** for fast custom tool creation.
-- **Built-in tests** and a Gradio dashboard for inspection and chat.
+### 🧠 Memory System
+- **Vector memory** (ChromaDB) - Semantic storage
+- **Conversation history** - Remembers context
+- **Action logging** - Tracks all activities
 
----
-
-## 🛠️ Capabilities
-
-- **📁 Filesystem**
-  - Read, list, move, and organize files.
-  - Automate Downloads sorting, backups, and cleanup.
-- **🌐 Browser**
-  - Headless/headed browsing with Playwright.
-  - Search, navigate, fill forms, click elements, and scrape structured data.
-- **🐙 GitHub**
-  - Search repositories and issues, discover contribution opportunities.
-  - Optional Personal Access Token improves API limits and reliability.
-- **📧 Email**
-  - Read, draft, and prepare emails (Gmail support).
-  - Sends only after explicit approval when enabled.
-- **🔬 Academic research**
-  - Query Semantic Scholar + web search for papers, authors, and labs.
-  - Summarize papers and track new publications.
-- **⚡ Dynamic Python execution**
-  - LLM generates Python code; executor runs it in a sandboxed subprocess.
-  - Useful for data-processing tasks, small automation scripts, and prototyping.
+### 🔒 Safety Features
+- **Policy engine** - Rate limits, approvals
+- **Human approval gates** - For sensitive actions
+- **Sandboxed code execution** - Safe Python runs
 
 ---
 
-## 🔄 How it works
+## 📂 Project Structure
 
-**High-level flow:**
-`User (or timer) → Gemini (LLM) → Skill selector → Policy check → Skill executes → Memory stores observation → Agent replies`
-
-**Cycle steps:**
-1. Wake (user input or timer)
-2. Load recent memory and context
-3. LLM plans and picks the best skill + parameters
-4. Policy engine approves or denies (rate-limits, approval gates)
-5. Skill executes, result saved to ChromaDB
-6. Agent returns output and waits for next cycle
-
----
-
-## 📂 Project structure
-
-```text
+```
 RKTM83/
-├── agent_brain.py       # Core engine (PolicyEngine, AgentMemory, AgentBrain)
-├── run_agent.py         # Entry point (interactive & autonomous)
-├── config.yaml          # Zero-code configuration
-├── requirements.txt     # Python dependencies
-├── env.example          # .env template
-├── dashboard.py         # Gradio dashboard
-├── supervisor.py        # Auto-restart supervisor
-├── skills/              # Skill modules
-│   ├── browser_skill.py
-│   ├── desktop_skill.py
+├── rktm83-dashboard.py     # NEW! Production dashboard (recommended)
+├── rktm83-cli/              # NEW! TypeScript CLI wrapper
+│   ├── src/index.ts       # CLI commands
+│   ├── agent.py           # Python backend
+│   └── package.json
+├── agent_brain.py         # Core engine
+├── run_agent.py           # Entry point
+├── config.yaml            # Configuration
+├── dashboard.py          # Legacy dashboard
+├── skills/                # Skill modules (40+ tools)
+│   ├── browser_skill.py  # 10 browser tools
+│   ├── desktop_skill.py  # 4 desktop tools
 │   ├── filesystem_skill.py
 │   ├── email_skill.py
 │   ├── executor_skill.py
 │   ├── research_skill.py
 │   ├── github_skill.py
-│   └── custom_skill.py
-├── tests/               # Unit tests
-└── docs/                # Extended documentation
+│   ├── notify_skill.py
+│   └── career_skill.py
+├── requirements.txt
+├── .env                   # Environment variables
+└── README.md
 ```
 
 ---
 
-## 🚀 Installation
+## 🚀 Quick Start
 
-**1. Clone the repository**
+### Option 1: Web Dashboard (RECOMMENDED)
 ```bash
-git clone https://github.com/rktm0604/RKTM83.git
-cd RKTM83
+# Start the dashboard
+python rktm83-dashboard.py
+
+# Open in browser
+# http://localhost:7860
 ```
 
-**2. (Recommended) Create & activate a virtual environment**
-```bash
-python -m venv .venv
-# macOS / Linux
-source .venv/bin/activate    
-# Windows (PowerShell)
-.\.venv\Scripts\activate     
-```
-
-**3. Install dependencies**
-```bash
-pip install --upgrade pip
-pip install -r requirements.txt
-```
-
-**4. Install Playwright browsers (for browser skill)**
-```bash
-playwright install chromium
-```
-
-**5. Optional: Pull a local Ollama model for offline operation**
-```bash
-ollama pull llama3.2:3b
-```
-
----
-
-## ⚙️ Setup — .env & GEMINI_API_KEY
-
-Copy the example environment file:
-```bash
-cp env.example .env
-```
-
-**Important variables:**
-- `GEMINI_API_KEY` — API key for Google Gemini (recommended). If you want fully local operation, switch `brain.provider` to `ollama` in `config.yaml` and install local models.
-- `GITHUB_TOKEN` — Optional: Personal Access Token for higher GitHub API limits.
-- `RAKBOT_GMAIL_EMAIL` / `RAKBOT_GMAIL_PASSWORD` — For Gmail: use an app-specific password and secure storage.
-
-> **Security Note:** `.env` is gitignored. Never commit secrets.
-
----
-
-## 💻 Usage
-
-**Interactive Web Chat:**
-```bash
-python dashboard.py
-```
-*(Opens a local Gradio dashboard at http://localhost:7860)*
-
-**Interactive Terminal (chat) mode:**
+### Option 2: Terminal Chat Mode
 ```bash
 python run_agent.py --chat
+# Then type your commands
 ```
 
-**Autonomous (continuous background cycles):**
+### Option 3: TypeScript CLI (Advanced)
 ```bash
-python run_agent.py
+cd rktm83-cli
+npm install
+npm run build
+npm link
+rktm83 --help
 ```
-
-**Common flags:**
-- `--cycles N` (run N cycles then exit for testing)
-- `--cycle-sleep S` (seconds between cycles)
-- `--status` (show agent status)
-- `--test-skills` (validate configured skills)
 
 ---
 
-## 📝 Example commands (real use cases)
+## 🛠️ Available Tools
 
-- **Organize downloads:**
-  *"Organize my Downloads folder by file type and move images to Pictures."*
-- **Research summary:**
-  *"Find recent papers on retrieval-augmented generation and summarize the top 5."*
-- **GitHub discovery:**
-  *"Find good-first-issues for projects about semantic search."*
-- **Email draft (approval required):**
-  *"Draft an outreach email to Dr. Smith about collaboration on X."*
-- **Code execution:**
-  *"Generate a Python script that reads data.csv and plots a histogram, then run it."*
+### 🌐 Browser (10 tools)
+| Tool | Description |
+|------|-------------|
+| `search_web` | Web search with fallback (DDG → Google → Bing) |
+| `browse_url` | Open URL in visible browser |
+| `screenshot` | Capture page screenshot |
+| `scroll_page` | Scroll up/down |
+| `scrape_content` | Extract with CSS selectors |
+| `fill_form` | Fill forms with templates |
+| `click_element` | Click buttons/links |
+| `get_page_state` | Debug page info |
+| `automation_workflow` | Multi-step automation |
+
+### 💻 Desktop (4 tools)
+| Tool | Description |
+|------|-------------|
+| `open_app` | Open applications |
+| `type_text` | Type into active window |
+| `hotkey` | Keyboard shortcuts |
+| `screenshot` | Screen capture |
+
+### 📁 Filesystem (4 tools)
+| Tool | Description |
+|------|-------------|
+| `list_files` | List directory contents |
+| `read_file` | Read file content |
+| `move_file` | Move/copy files |
+| `organize_folder` | Auto-organize |
+
+### 📧 Email (3 tools)
+| Tool | Description |
+|------|-------------|
+| `send_email` | Send emails (requires approval) |
+| `read_inbox` | Read recent emails |
+| `reply_email` | Reply to emails |
+
+### 🔬 Research (3 tools)
+| Tool | Description |
+|------|-------------|
+| `find_papers` | Search academic papers |
+| `find_professors` | Find researchers |
+| `find_research_programs` | Find research programs |
+
+### 🐙 GitHub (3 tools)
+| Tool | Description |
+|------|-------------|
+| `find_issues` | Search GitHub issues |
+| `find_trending` | Trending repositories |
+| `track_repo` | Track repositories |
+
+### 💼 Career (5 tools)
+| Tool | Description |
+|------|-------------|
+| `search_opportunities` | Job/internship search |
+| `score_opportunity` | Rate opportunities |
+| `draft_outreach` | Draft outreach messages |
+| `send_outreach` | Send messages |
+| `send_digest` | Daily digest |
+
+---
+
+## 💬 Test Commands
+
+After starting the dashboard, try these:
+
+| Command | Expected Result |
+|---------|------------------|
+| `"Hello"` | Conversational response |
+| `"go to github.com"` | Browser opens, shows page |
+| `"search for AI internships"` | Shows search results |
+| `"list files in downloads"` | Lists files |
+| `"find papers on RAG"` | Shows academic papers |
+| `"open notepad"` | Opens Notepad app |
+| `"find trending repos"` | Shows GitHub trending |
+
+---
+
+## ⚙️ Configuration
+
+### config.yaml
+```yaml
+agent:
+  name: "RKTM83"
+  version: "2.0"
+  memory_path: "./rktm83_memory"
+
+brain:
+  provider: "ollama"  # or "gemini"
+  ollama_model: "llama3.2:3b"
+
+browser:
+  headless: false  # Set to false for visible browser
+  visible: true
+  timeout: 20
+
+skills:
+  - browser
+  - desktop
+  - filesystem
+  - email
+  - executor
+  - research
+  - github
+  - notify
+  - career
+```
+
+### .env
+```env
+GEMINI_API_KEY=your_key_here
+BROWSER_HEADLESS=false  # Make browser visible
+GITHUB_TOKEN=your_token_here
+RAKBOT_GMAIL_EMAIL=your_email
+RAKBOT_GMAIL_PASSWORD=app_password
+```
+
+---
+
+## 🔧 Installation
+
+```bash
+# 1. Clone
+git clone https://github.com/rktm0604/RKTM83.git
+cd RKTM83
+
+# 2. Virtual environment
+python -m venv .venv
+.\.venv\Scripts\activate  # Windows
+
+# 3. Install dependencies
+pip install -r requirements.txt
+
+# 4. Install Playwright
+playwright install chromium
+
+# 5. Start Ollama (optional, for local models)
+ollama serve
+ollama pull llama3.2:3b
+
+# 6. Run!
+python rktm83-dashboard.py
+```
+
+---
+
+## 🎯 How It Works
+
+1. **User Input** → Dashboard receives command
+2. **Auto-Detection** → System detects action keywords (search, go to, open, etc.)
+3. **Tool Execution** → Automatically executes appropriate tool
+4. **LLM Response** → Gets response from Ollama/Gemini
+5. **Result Display** → Shows actual tool results in chat
+6. **Memory** → Saves to ChromaDB for context
+
+---
+
+## 🔄 Action → Tool Mapping
+
+The system automatically maps your words to tools:
+
+| You say... | Tool executes... |
+|------------|------------------|
+| "go to github.com" | `browse_url` |
+| "search for jobs" | `search_web` / `search_opportunities` |
+| "open notepad" | `open_app` |
+| "list files" | `list_files` |
+| "find papers on X" | `find_papers` |
+| "check email" | `read_inbox` |
+| "take screenshot" | `screenshot` |
 
 ---
 
 ## 🗺️ Roadmap
 
-Planned improvements:
-- Docker-based executor sandbox for extra isolation
-- Voice interface and speech-to-text
-- Multi-agent orchestration and task delegation
-- Mobile companion app and improved web dashboard
-- Additional skills: calendar, Slack/Teams, richer notifications
+- [ ] Production API server (FastAPI)
+- [ ] Multi-agent orchestration  
+- [ ] Voice interface
+- [ ] Docker sandbox (like NemoClaw)
+- [ ] Mobile companion app
+- [ ] Plugin system
 
 ---
 
 ## 🤝 Contributing
 
-**Workflow:** `Fork → branch → implement → test → open PR`
-- Please add tests for new features and run existing tests.
-- See `CONTRIBUTING.md` for coding conventions and PR expectations.
+```bash
+# Fork → Branch → Implement → Test → PR
+git checkout -b feature/my-feature
+# ... make changes ...
+git commit -m "Add feature"
+git push origin main
+```
 
 ---
 
-Built and maintained by **[Raktim Banerjee (rktm0604)](https://github.com/rktm0604)**
+## 📝 License
+
+MIT License - See LICENSE file.
+
+---
+
+## 👨‍💻 Built By
+
+**Raktim Banerjee** (raktim0604)
+- 2nd Year BTech CSE, NIIT University
+- Microsoft Student Ambassador
+- Building autonomous AI agents 🚀
+
+---
+
+## ⭐ Show Your Support
+
+If RKTM83 helps you, give it a ⭐ on GitHub!

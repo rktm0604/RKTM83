@@ -32,25 +32,24 @@ import re
 
 _AGENT = None
 
+
 def get_agent():
     """Initialize or return the global Agent instance."""
     global _AGENT
     if _AGENT is not None:
         return _AGENT
-    
+
     cfg = CONFIG.get("agent", {})
     overrides = {k: v for k, v in CONFIG.get("policy", {}).items() if k != "search_interval_hours"}
-    
+
     _AGENT = Agent(
         name=cfg.get("name", "RKTM83"),
         profile=build_profile(CONFIG),
         memory_path=cfg.get("memory_path", "./rktm83_memory"),
         policy_overrides=overrides,
-        state_path="policy_state.json",
-        config=CONFIG,
-        agent_state_path="agent_state.json",
     )
     _AGENT.context["config"] = CONFIG
+    _AGENT.brain.set_config(CONFIG)
     load_skills(_AGENT, CONFIG)
     return _AGENT
 
@@ -70,7 +69,7 @@ def load_policy():
         cfg = load_config()
         overrides = {k: v for k, v in cfg.get("policy", {}).items()
                      if k != "search_interval_hours"}
-        policy = PolicyEngine(overrides, state_path="policy_state.json")
+        policy = PolicyEngine(overrides)
         return policy.status()
     except Exception as e:
         return {"error": str(e)}
@@ -182,79 +181,172 @@ def get_config():
         return f"Error reading config: {e}"
 
 
-# ── TAB: Chat / Command ──────────────────────────────────────────────────────
+# ── CHAT SESSION STATE ─────────────────────────────────────────────────────
+
+_chat_history = []  # Session memory for conversation context
+_max_history = 10   # Keep last 10 exchanges
+
+
+# ── TAB: Chat / Command ─────────────────────────────────────────────────────
 
 def chat_with_agent(message, history):
-    """Gradio ChatInterface handler to execute an agent cycle."""
+    """ChatGPT-style chat interface - natural conversation."""
+    global _chat_history
+
     try:
         agent = get_agent()
     except Exception as e:
-        return f"❌ Failed to load agent: {str(e)}"
-        
+        return f"Sorry, I encountered an error: {str(e)}"
+
     user_input = message.strip()
     if not user_input:
-        return "Please enter a command."
+        return "Please type a message."
 
-    # Build context
-    agent.context.update({
-        "time": datetime.datetime.now().isoformat(),
-        "memory": agent.memory.stats(),
-        "policy": agent.policy.status(),
-        "user_request": user_input,
-    })
+    # Build conversation context from history
+    conversation = ""
+    for role, msg in _chat_history[-_max_history:]:
+        conversation += f"{role}: {msg}\n"
 
-    tools_str = "\n".join(f"- {n}: {i['description']}" for n, i in agent.brain._tools.items())
-    prompt = f"{agent.brain.profile}\n\nUSER REQUEST: {user_input}\n\nTOOLS:\n{tools_str}\n\nPick the BEST tool for this request.\nReply ONLY in JSON: {{\"tool\": \"name\", \"params\": {{}}, \"reasoning\": \"one line\"}}"
+    # Current context
+    current_time = datetime.datetime.now().strftime("%I:%M %p")
+    context_str = f"""CURRENT TIME: {current_time}
+MEMORY: {agent.memory.stats()}
+TOOLS AVAILABLE: {', '.join(agent.brain._tools.keys())}"""
 
+    # Smart prompt - let LLM decide what to do
+    prompt = f"""{agent.brain.profile}
+
+CONVERSATION SO FAR:
+{conversation}
+
+CURRENT CONTEXT:
+{context_str}
+
+USER'S LATEST MESSAGE: "{user_input}"
+
+INSTRUCTIONS:
+1. If the user is just chatting/greeting/asking questions - respond naturally and conversationally like a helpful assistant
+2. If the user is asking you to DO something (search, list files, send email, open apps, etc.) - use a tool
+3. If you use a tool, include it at the END of your response in this exact format:
+   ACTION: open_app
+   PARAMS: {{"app": "Microsoft Word", "file_path": "C:/Users/Raktim/Downloads/project proposal.docx"}}
+4. Keep your main response conversational and helpful
+5. After your response, include ACTION and PARAMS if you used a tool
+6. Do NOT include any code blocks around the action/params
+
+Remember: You are RKTM83, a personal AI assistant. Be friendly, helpful, and natural!"""
+
+    # Get LLM response
     response = agent.brain._infer(prompt)
 
-    # Parse JSON
-    decision = None
+    # Debug: print raw response
+    print(f"[DEBUG] Raw response: {response[:500]}")
+
+    # Check if LLM wants to use a tool - more robust parsing
+    response_lower = response.lower()
+    tool_name = None
+    tool_params = {}
+    
     try:
-        clean = re.sub(r'```(?:json)?', '', response).strip()
-        m = re.search(r'\{.*\}', clean, re.DOTALL)
-        if m:
-            d = json.loads(m.group())
-            if d.get("tool") in agent.brain._tools:
-                decision = d
-    except Exception:
-        pass
+        action_idx = response_lower.find("action:")
+        params_idx = response_lower.find("params:")
+        if action_idx != -1 and params_idx != -1 and params_idx > action_idx:
+            action_line = response[action_idx + 8:params_idx].strip()
+            params_line = response[params_idx + 8:].strip()
+            
+            # Try to parse as JSON
+            if params_line.strip().startswith("{"):
+                import ast
+                try:
+                    tool_params = ast.literal_eval(params_line.split("}")[0] + "}")
+                except:
+                    import json
+                    try:
+                        tool_params = json.loads(params_line.split("}")[0] + "}")
+                    except:
+                        pass
+            tool_name = action_line.strip()
+            
+            # Remove the action/params from the displayed response
+            response = response[:action_idx].strip()
+    except Exception as e:
+        print(f"Tool parse error: {e}")
 
-    if not decision:
-        return f"❌ **Agent couldn't decide.** Raw LLM response:\n```\n{response[:300]}\n```"
+    final_response = response
 
-    tool = decision.get("tool")
-    params = decision.get("params", {})
-    reasoning = decision.get("reasoning", "")
+    # If tool requested, execute it
+    if tool_name and tool_name in agent.brain._tools:
+        # Clean up response to just be the conversational part
+        final_response = response.split("TOOL:")[0].strip()
+        
+        # Execute tool and check actual result
+        try:
+            result = agent.brain.execute({"tool": tool_name, "params": tool_params}, agent.context)
 
-    # Output log
-    out = f"**💭 Reasoning:** {reasoning}\n\n**🛠️ Selected Tool:** `{tool}`\n\n```json\n{json.dumps(params, indent=2)}\n```\n\n"
+            # Add tool result to response - be honest about success/failure
+            if result.get("success"):
+                # Extract relevant info and add naturally
+                if tool_name == "list_files":
+                    if result.get("count", 0) > 0:
+                        items = result.get("items", [])[:5]
+                        files = ", ".join([i.get("name", "?") for i in items])
+                        final_response += f"\n\nI found {result.get('count', 0)} items. Here's what's there: {files}"
+                    else:
+                        final_response += "\n\nThe folder appears to be empty."
+                elif tool_name == "search_web":
+                    if result.get("results"):
+                        # Format search results nicely
+                        results = result.get("results", [])
+                        if results:
+                            formatted = "\n\n**Search Results:**\n"
+                            for i, r in enumerate(results[:5], 1):
+                                title = r.get("title", "Untitled")[:60]
+                                url = r.get("url", "")
+                                snippet = r.get("snippet", "")[:100]
+                                source = r.get("source", "")
+                                formatted += f"{i}. **{title}**\n   {snippet}... \n   {url} ({source})\n"
+                            final_response += formatted
+                        else:
+                            final_response += "\n\nI didn't find any results for that search."
+                    else:
+                        final_response += "\n\nI didn't find any results for that search."
+                elif tool_name == "open_app":
+                    app = tool_params.get("app", "the app")
+                    file_info = tool_params.get("file_path", "")
+                    if file_info:
+                        final_response = f"Opened {file_info} with {app}!"
+                    else:
+                        final_response = f"Launched {app} for you!"
+                elif tool_name == "browse_url":
+                    if result.get("title"):
+                        title = result.get("title", "Untitled")
+                        text = result.get("text", "")[:500]
+                        url = result.get("url", "")
+                        final_response += f"\n\n**Page: {title}**\n{text}...\n\n[View full page]({url})"
+                    else:
+                        final_response += "\n\nI couldn't access that page."
+                else:
+                    # Generic success handling
+                    if result.get("message"):
+                        final_response += f"\n\n{result.get('message')}"
+            else:
+                # Tool failed - be honest!
+                error_msg = result.get("error", "unknown error")
+                final_response += f"\n\n(Actually, that didn't work: {error_msg})"
+        except Exception as e:
+            final_response += f"\n\n(Tried to run that but got an error: {str(e)})"
 
-    # Execute
-    result = agent.brain.execute(decision, agent.context)
+    # Update conversation history
+    _chat_history.append(("User", user_input))
+    _chat_history.append(("RKTM83", final_response))
 
-    # Display result
-    out += "### Result\n"
-    if result.get("success"):
-        out += "✅ **Success**\n\n"
-        for k, v in result.items():
-            if k == "success":
-                continue
-            v_str = str(v)
-            if len(v_str) > 500:
-                v_str = v_str[:500] + "..."
-            out += f"- **{k}**: {v_str}\n"
-    else:
-        out += f"❌ **Failed**: {result.get('error', 'unknown error')}"
-
-    # Record Memory
+    # Record in agent memory
     agent.memory.observe(
-        f"chat: {user_input[:60]} → {tool}",
-        {"tool": tool, "source": "chat"}
+        f"chat: {user_input[:50]}",
+        {"source": "chat", "response": final_response[:100]}
     )
-    agent.context["last_action"] = tool
 
-    return out
+    return final_response
 
 
 # ── BUILD DASHBOARD ─────────────────────────────────────────────────────────
@@ -264,7 +356,7 @@ def build_dashboard():
 
     with gr.Blocks(
         title="RKTM83 Dashboard",
-        theme=gr.themes.Soft(
+        theme=gr.themes.Default(
             primary_hue="purple",
             secondary_hue="blue",
         ),
@@ -283,8 +375,7 @@ def build_dashboard():
             with gr.Tab("💬 Command Center"):
                 gr.ChatInterface(
                     fn=chat_with_agent,
-                    examples=["List files in my downloads folder", "What time is it?", "Check my recent memory for keywords"],
-                    type="messages"
+                    examples=["Hello!", "What time is it?", "List files in my downloads"]
                 )
 
             # ── Status Tab

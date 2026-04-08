@@ -134,13 +134,11 @@ if __name__ == "__main__":
         profile          = build_profile(CONFIG),
         memory_path      = cfg.get("memory_path", "./rktm83_memory"),
         policy_overrides = overrides,
-        state_path       = "policy_state.json",
-        config           = CONFIG,
-        agent_state_path = "agent_state.json",
     )
 
     # Store full config in context so skills can access it
     agent.context["config"] = CONFIG
+    agent.brain.set_config(CONFIG)
 
     if args.status:
         agent._status()
@@ -198,7 +196,11 @@ if __name__ == "__main__":
                 f"- {n}: {i['description']}"
                 for n, i in agent.brain._tools.items()
             )
+            context_str = f"Current System Time: {agent.context['time']}\nMemory Stats: {agent.context['memory']}"
             prompt = f"""{agent.brain.profile}
+
+CURRENT CONTEXT:
+{context_str}
 
 USER REQUEST: {user_input}
 
@@ -206,6 +208,7 @@ TOOLS:
 {tools_str}
 
 Pick the BEST tool for this request.
+IMPORTANT: In chat mode, you CAN pick 'respond_to_user' multiple times in a row!
 Reply ONLY in JSON: {{"tool": "name", "params": {{}}, "reasoning": "one line"}}"""
 
             response = agent.brain._infer(prompt)
@@ -257,7 +260,10 @@ Reply ONLY in JSON: {{"tool": "name", "params": {{}}, "reasoning": "one line"}}"
                 f"chat: {user_input[:60]} → {tool}",
                 {"tool": tool, "source": "chat"}
             )
-            agent.context["last_action"] = tool
+            if tool != "respond_to_user":
+                agent.context["last_action"] = tool
+            else:
+                agent.context["last_action"] = "user_chat"
             print()
 
         sys.exit(0)

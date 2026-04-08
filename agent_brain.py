@@ -1,150 +1,69 @@
 """
-RKTM83 core runtime.
-
-Three layers:
-- PolicyEngine
-- AgentMemory
-- AgentBrain
-- Agent
+agent_brain.py — RKTM83 Core
+Three layers: PolicyEngine, AgentMemory, AgentBrain, Agent.
+Domain-agnostic. Skills plug in via agent.load_skill(module).
 """
 
-from __future__ import annotations
-
-import datetime
-import hashlib
 import json
-import logging
-import os
 import re
 import time
-
-import chromadb
+import datetime
+import logging
 import requests
+import chromadb
 from chromadb.utils import embedding_functions
 
-from resilience import (
-    CircuitBreakerError,
-    api_circuit_breaker,
-    before_sleep_log,
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential,
+import os
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
-
-try:
-    from google import genai
-except ImportError:  # pragma: no cover - dependency shim
-    genai = None
-
-
-LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-
-logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
 logger = logging.getLogger("rktm83")
 
-try:
-    _fh = logging.FileHandler("rktm83.log", encoding="utf-8")
-    _fh.setFormatter(logging.Formatter(LOG_FORMAT))
-    logger.addHandler(_fh)
-except Exception:  # pragma: no cover - best-effort logging
-    pass
-
-
-INFERENCE_ENDPOINT = "http://localhost:11434/api/generate"
-DEFAULT_OLLAMA_MODEL = "llama3.2:3b"
-DEFAULT_GEMINI_MODEL = "gemini-2.0-flash"
 INFERENCE_TIMEOUT = 30
 
 
 class PolicyEngine:
     ALLOW = "allow"
     ROUTE = "route"
-    DENY = "deny"
+    DENY  = "deny"
 
     DEFAULT_LIMITS = {
-        "outreach_per_day": 5,
-        "outreach_per_week": 20,
-        "llm_calls_per_day": 150,
+        "outreach_per_day":      5,
+        "outreach_per_week":     20,
+        "llm_calls_per_day":     150,
         "search_calls_per_hour": 10,
     }
 
-    def __init__(self, overrides: dict = None, state_path: str = "policy_state.json"):
-        overrides = overrides or {}
+    def __init__(self, overrides: dict = {}):
         self.limits = {**self.DEFAULT_LIMITS, **overrides}
-        self._state_path = state_path
-        self._state = self._load_state()
-        logger.info("PolicyEngine ready (state: %s)", state_path)
-
-    def _default_state(self) -> dict:
-        now = datetime.datetime.now()
-        return {
-            "outreach_today": 0,
-            "outreach_week": 0,
-            "llm_calls_today": 0,
+        self._state = {
+            "outreach_today":    0,
+            "outreach_week":     0,
+            "llm_calls_today":   0,
             "search_calls_hour": 0,
-            "last_day": datetime.date.today().isoformat(),
-            "last_hour": now.strftime("%Y-%m-%d-%H"),
-            "last_week": now.strftime("%Y-W%W"),
-            "total": 0,
+            "last_day":  datetime.date.today().isoformat(),
+            "last_hour": datetime.datetime.now().strftime("%Y-%m-%d-%H"),
+            "total":     0,
         }
-
-    def _load_state(self) -> dict:
-        if self._state_path and os.path.exists(self._state_path):
-            try:
-                with open(self._state_path, "r", encoding="utf-8") as f:
-                    state = json.load(f)
-                logger.info("PolicyEngine: loaded state from %s", self._state_path)
-                for key, value in self._default_state().items():
-                    state.setdefault(key, value)
-                return state
-            except Exception as e:
-                logger.warning("PolicyEngine: failed to load state: %s", e)
-        return self._default_state()
-
-    def _save_state(self):
-        if not self._state_path:
-            return
-        try:
-            with open(self._state_path, "w", encoding="utf-8") as f:
-                json.dump(self._state, f, indent=2)
-        except Exception as e:
-            logger.debug("PolicyEngine: failed to save state: %s", e)
+        logger.info("PolicyEngine ready")
 
     def _reset(self):
         today = datetime.date.today().isoformat()
-        hour = datetime.datetime.now().strftime("%Y-%m-%d-%H")
-        week = datetime.datetime.now().strftime("%Y-W%W")
-
+        hour  = datetime.datetime.now().strftime("%Y-%m-%d-%H")
         if self._state["last_day"] != today:
-            self._state.update(
-                {"outreach_today": 0, "llm_calls_today": 0, "last_day": today}
-            )
+            self._state.update({"outreach_today": 0, "llm_calls_today": 0, "last_day": today})
         if self._state["last_hour"] != hour:
             self._state.update({"search_calls_hour": 0, "last_hour": hour})
-        if self._state.get("last_week") != week:
-            self._state.update({"outreach_week": 0, "last_week": week})
 
-    def check(self, action: str, target: str = "") -> tuple:
-        del target
+    def check(self, action: str) -> tuple:
         self._reset()
         if action == "inference":
-            if self._state["llm_calls_today"] >= self.limits["llm_calls_per_day"]:
-                return self.DENY, "daily llm limit reached"
             return self.ROUTE, "routed"
-        if action == "llm":
-            if self._state["llm_calls_today"] >= self.limits["llm_calls_per_day"]:
-                return self.DENY, "daily llm limit reached"
-            return self.ALLOW, "ok"
-        if action == "network":
-            if self._state["search_calls_hour"] >= self.limits["search_calls_per_hour"]:
-                return self.DENY, "hourly search limit reached"
-            return self.ALLOW, "ok"
         if action == "outreach":
             if self._state["outreach_today"] >= self.limits["outreach_per_day"]:
                 return self.DENY, "daily outreach limit reached"
-            if self._state["outreach_week"] >= self.limits["outreach_per_week"]:
-                return self.DENY, "weekly outreach limit reached"
             return self.ALLOW, "ok"
         if action == "search":
             if self._state["search_calls_hour"] >= self.limits["search_calls_per_hour"]:
@@ -156,323 +75,267 @@ class PolicyEngine:
         self._reset()
         if action == "outreach":
             self._state["outreach_today"] += 1
-            self._state["outreach_week"] += 1
+            self._state["outreach_week"]  += 1
         elif action == "llm":
             self._state["llm_calls_today"] += 1
         elif action == "search":
             self._state["search_calls_hour"] += 1
         self._state["total"] += 1
-        self._save_state()
 
     def status(self) -> dict:
         self._reset()
         return {
-            "outreach": f"{self._state['outreach_today']}/{self.limits['outreach_per_day']} today",
-            "outreach_w": f"{self._state['outreach_week']}/{self.limits['outreach_per_week']} this week",
-            "llm_calls": f"{self._state['llm_calls_today']}/{self.limits['llm_calls_per_day']} today",
-            "searches": f"{self._state['search_calls_hour']}/{self.limits['search_calls_per_hour']} this hour",
-            "total": self._state["total"],
+            "outreach":   f"{self._state['outreach_today']}/{self.limits['outreach_per_day']} today",
+            "llm_calls":  f"{self._state['llm_calls_today']}/{self.limits['llm_calls_per_day']} today",
+            "searches":   f"{self._state['search_calls_hour']}/{self.limits['search_calls_per_hour']} this hour",
+            "total":      self._state["total"],
         }
 
 
 class AgentMemory:
     def __init__(self, path: str = "./rktm83_memory"):
-        self.path = path
+        self.path   = path
         self.client = chromadb.PersistentClient(path=path)
-        ef = embedding_functions.DefaultEmbeddingFunction()
-        self.observations = self.client.get_or_create_collection(
-            "observations", embedding_function=ef
-        )
-        self.entities = self.client.get_or_create_collection(
-            "entities", embedding_function=ef
-        )
-        self.actions = self.client.get_or_create_collection(
-            "actions", embedding_function=ef
-        )
-        self.learned = self.client.get_or_create_collection(
-            "learned", embedding_function=ef
-        )
+        ef          = embedding_functions.DefaultEmbeddingFunction()
+        self.observations = self.client.get_or_create_collection("observations", embedding_function=ef)
+        self.entities     = self.client.get_or_create_collection("entities",     embedding_function=ef)
+        self.actions      = self.client.get_or_create_collection("actions",      embedding_function=ef)
+        self.learned      = self.client.get_or_create_collection("learned",      embedding_function=ef)
         logger.info("AgentMemory ready at %s", path)
 
     def _id(self, raw: str) -> str:
-        safe = re.sub(r"[^a-zA-Z0-9_-]", "_", str(raw))[:50]
-        digest = hashlib.sha1(str(raw).encode("utf-8")).hexdigest()[:10]
-        return f"{safe}_{digest}"
+        return re.sub(r'[^a-zA-Z0-9_-]', '_', str(raw))[:50] + "_" + str(abs(hash(raw)))[-6:]
 
-    def observe(self, content: str, meta: dict = None):
-        meta = meta or {}
+    def observe(self, content: str, meta: dict = {}):
         try:
             self.observations.add(
                 documents=[content],
                 metadatas=[{**meta, "ts": datetime.datetime.now().isoformat()}],
-                ids=[self._id(content[:40] + str(time.time()))],
+                ids=[self._id(content[:40] + str(time.time()))]
             )
-        except Exception as e:
-            logger.debug("AgentMemory.observe error: %s", e)
+        except Exception:
+            pass
 
-    def remember(self, name: str, kind: str, uid: str, meta: dict = None):
-        meta = meta or {}
+    def remember(self, name: str, kind: str, uid: str, meta: dict = {}):
         try:
-            self.entities.upsert(
+            self.entities.add(
                 documents=[f"{name} {kind}"],
-                metadatas=[
-                    {
-                        "name": name,
-                        "kind": kind,
-                        "uid": uid,
-                        "ts": datetime.datetime.now().isoformat(),
-                        **meta,
-                    }
-                ],
-                ids=[self._id(uid)],
+                metadatas=[{"name": name, "kind": kind, "uid": uid,
+                            "ts": datetime.datetime.now().isoformat(), **meta}],
+                ids=[self._id(uid)]
             )
-        except Exception as e:
-            logger.debug("AgentMemory.remember error: %s", e)
+        except Exception:
+            pass
 
     def log(self, tool: str, outcome: str, detail: str = ""):
         try:
             self.actions.add(
                 documents=[f"{tool}: {detail}"],
-                metadatas=[
-                    {
-                        "tool": tool,
-                        "outcome": outcome,
-                        "ts": datetime.datetime.now().isoformat(),
-                    }
-                ],
-                ids=[self._id(f"{tool}_{time.time()}")],
+                metadatas=[{"tool": tool, "outcome": outcome,
+                            "ts": datetime.datetime.now().isoformat()}],
+                ids=[self._id(f"{tool}_{time.time()}")]
             )
-        except Exception as e:
-            logger.debug("AgentMemory.log error: %s", e)
+        except Exception:
+            pass
 
-    def learn(self, pattern: str, signal: str, confidence: float = 1.0):
+    def learn(self, pattern: str, signal: str):
         try:
             self.learned.add(
                 documents=[pattern],
-                metadatas=[
-                    {
-                        "signal": signal,
-                        "confidence": confidence,
-                        "ts": datetime.datetime.now().isoformat(),
-                    }
-                ],
-                ids=[self._id(f"learn_{pattern[:40]}")],
+                metadatas=[{"signal": signal, "ts": datetime.datetime.now().isoformat()}],
+                ids=[self._id(f"learn_{pattern[:40]}")]
             )
-        except Exception as e:
-            logger.debug("AgentMemory.learn error: %s", e)
+        except Exception:
+            pass
 
     def search(self, collection: str, query: str, n: int = 5) -> list:
         col = getattr(self, collection, self.observations)
         try:
-            result = col.query(query_texts=[query], n_results=n)
-            return result["metadatas"][0] if result["metadatas"] else []
-        except Exception as e:
-            logger.debug("AgentMemory.search error: %s", e)
+            r = col.query(query_texts=[query], n_results=n)
+            return r["metadatas"][0] if r["metadatas"] else []
+        except Exception:
             return []
 
     def stats(self) -> dict:
         return {
             "observations": self.observations.count(),
-            "entities": self.entities.count(),
-            "actions": self.actions.count(),
-            "learned": self.learned.count(),
+            "entities":     self.entities.count(),
+            "actions":      self.actions.count(),
+            "learned":      self.learned.count(),
         }
-
-    def remember_entity(self, name: str, kind: str, uid: str, meta: dict = None):
-        return self.remember(name, kind, uid, meta)
-
-    def entity_status(self, identifier: str) -> dict:
-        try:
-            result = self.entities.get(ids=[self._id(identifier)], include=["metadatas"])
-            if result and result["metadatas"]:
-                return result["metadatas"][0]
-        except Exception as e:
-            logger.debug("AgentMemory.entity_status error: %s", e)
-        return {}
-
-    def update_entity(self, identifier: str, updates: dict):
-        try:
-            existing = self.entity_status(identifier)
-            if existing:
-                merged = {
-                    **existing,
-                    **updates,
-                    "ts": datetime.datetime.now().isoformat(),
-                }
-                self.entities.update(ids=[self._id(identifier)], metadatas=[merged])
-        except Exception as e:
-            logger.debug("AgentMemory.update_entity error: %s", e)
-
-    def log_action(self, tool: str, identifier: str, detail: str = "", outcome: str = "ok"):
-        return self.log(tool, outcome, f"{identifier}: {detail[:60]}")
-
-    def has_link(self, link: str) -> bool:
-        try:
-            result = self.observations.get(
-                where={"link": link},
-                include=["metadatas"],
-                limit=1,
-            )
-            return bool(result and result["metadatas"])
-        except Exception:
-            return False
 
 
 class AgentBrain:
-    def __init__(
-        self,
-        name: str,
-        policy: PolicyEngine,
-        memory: AgentMemory,
-        profile: str = "",
-        config: dict = None,
-    ):
-        self.name = name
-        self.policy = policy
-        self.memory = memory
+    def __init__(self, name: str, policy: PolicyEngine,
+                 memory: AgentMemory, profile: str = ""):
+        self.name    = name
+        self.policy  = policy
+        self.memory  = memory
         self.profile = profile
-        self.config = config or {}
-        self._tools = {}
-        self._gemini_client = None
+        self._tools  = {}
+        self._config = {}
         logger.info("AgentBrain ready")
 
     def register_tool(self, name: str, description: str, handler):
         self._tools[name] = {"description": description, "handler": handler}
         logger.info("Tool: %s", name)
 
-    def _brain_settings(self) -> dict:
-        settings = self.config.get("brain", {})
-        return {
-            "provider": settings.get("provider", "gemini").lower(),
-            "gemini_model": settings.get("gemini_model", DEFAULT_GEMINI_MODEL),
-            "ollama_model": settings.get("ollama_model", DEFAULT_OLLAMA_MODEL),
-            "fallback": settings.get("fallback", True),
-        }
+    def set_config(self, config: dict):
+        """Set brain config from agent context."""
+        self._config = config.get("brain", {})
 
-    @api_circuit_breaker("ollama_api", logger=logger)
-    @retry(
-        wait=wait_exponential(min=1, max=30),
-        stop=stop_after_attempt(3),
-        retry=retry_if_exception_type(Exception),
-        reraise=True,
-        before_sleep=before_sleep_log(logger, logging.WARNING),
-    )
-    def _call_ollama(self, prompt: str, model: str) -> str:
-        response = requests.post(
-            INFERENCE_ENDPOINT,
-            json={"model": model, "prompt": prompt, "stream": False},
-            timeout=INFERENCE_TIMEOUT,
-        )
-        response.raise_for_status()
-        return response.json().get("response", "").strip()
-
-    def _get_gemini_client(self):
-        if self._gemini_client is not None:
-            return self._gemini_client
-
-        api_key = os.environ.get("GEMINI_API_KEY", "").strip()
-        if not api_key:
-            raise RuntimeError("GEMINI_API_KEY is not set")
-        if genai is None:
-            raise RuntimeError("google-genai package is not installed")
-
-        self._gemini_client = genai.Client(api_key=api_key)
-        return self._gemini_client
-
-    @api_circuit_breaker("gemini_api", logger=logger)
-    @retry(
-        wait=wait_exponential(min=1, max=30),
-        stop=stop_after_attempt(3),
-        retry=retry_if_exception_type(Exception),
-        reraise=True,
-        before_sleep=before_sleep_log(logger, logging.WARNING),
-    )
-    def _call_gemini(self, prompt: str, model: str) -> str:
-        client = self._get_gemini_client()
-        response = client.models.generate_content(
-            model=model,
-            contents=prompt,
-        )
-        return (response.text or "").strip()
+    def _get_inference_config(self) -> dict:
+        """Get LLM config from brain settings."""
+        brain_cfg = self._config
+        provider = brain_cfg.get("provider", "ollama")
+        
+        if provider == "gemini":
+            return {
+                "provider": "gemini",
+                "model": brain_cfg.get("gemini_model", "gemini-2.0-flash"),
+            }
+        else:
+            return {
+                "provider": "ollama",
+                "endpoint": os.environ.get("OLLAMA_URL", "http://localhost:11434"),
+                "model": brain_cfg.get("ollama_model", "llama3.2:3b"),
+            }
 
     def _infer(self, prompt: str) -> str:
-        verdict, reason = self.policy.check("inference")
-        if verdict == self.policy.DENY:
-            logger.warning("Inference blocked: %s", reason)
+        self.policy.record("llm")
+        cfg = self._get_inference_config()
+        
+        if cfg["provider"] == "gemini":
+            return self._call_gemini(prompt, cfg["model"])
+        else:
+            return self._call_ollama(prompt, cfg["endpoint"], cfg["model"])
+
+    def _call_gemini(self, prompt: str, model: str) -> str:
+        """Call Gemini API with fallback to Ollama."""
+        api_key = os.environ.get("GEMINI_API_KEY", "")
+        if not api_key:
+            logger.warning("No GEMINI_API_KEY, falling back to Ollama")
+            return self._call_ollama(prompt, "http://localhost:11434", "llama3.2:3b")
+        
+        try:
+            import google.genai as genai
+            client = genai.Client(api_key=api_key)
+            response = client.models.generate_content(
+                model=model,
+                contents=[{"role": "user", "parts": [{"text": prompt}]}],
+            )
+            return response.text.strip() if response.text else ""
+        except Exception as e:
+            logger.warning("Gemini failed: %s, falling back to Ollama", e)
+            fallback_cfg = self._config.get("fallback", True)
+            if fallback_cfg:
+                return self._call_ollama(prompt, "http://localhost:11434", "llama3.2:3b")
             return ""
 
-        self.policy.record("llm")
-
-        settings = self._brain_settings()
-        provider = settings["provider"]
-
-        # Build fallback chain: gemini → ollama
-        providers = [provider]
-        if settings["fallback"] and "ollama" not in providers:
-            providers.append("ollama")
-
-        for candidate in providers:
-            try:
-                if candidate == "gemini":
-                    return self._call_gemini(prompt, settings["gemini_model"])
-                else:
-                    return self._call_ollama(prompt, settings["ollama_model"])
-            except CircuitBreakerError as e:
-                logger.warning("%s circuit open: %s", candidate, e)
-            except Exception as e:
-                logger.warning("%s inference failed: %s", candidate, e)
-
-            if len(providers) > 1:
-                next_idx = providers.index(candidate) + 1
-                if next_idx < len(providers):
-                    logger.info("Falling back to %s", providers[next_idx])
-
+    def _call_ollama(self, prompt: str, endpoint: str, model: str) -> str:
+        """Call Ollama local API."""
+        try:
+            url = f"{endpoint}/api/generate"
+            r = requests.post(
+                url,
+                json={"model": model, "prompt": prompt, "stream": False},
+                timeout=INFERENCE_TIMEOUT,
+            )
+            if r.status_code == 200:
+                return r.json().get("response", "").strip()
+        except Exception as e:
+            logger.error("Ollama inference: %s", e)
         return ""
-
-    _call_inference = _infer
 
     def decide(self, context: dict) -> dict:
         if not self._tools:
             return {"tool": "wait", "params": {}, "reasoning": "no tools"}
 
-        tools_str = "\n".join(
-            f"- {name}: {info['description']}" for name, info in self._tools.items()
-        )
+        tools_str = "\n".join(f"- {n}: {i['description']}" for n, i in self._tools.items())
+
+        # Build user command section first
+        user_cmd = context.get("user_command", "")
+        if user_cmd:
+            # If it looks like a question or greeting → use chat tool
+            chat_triggers = ("?", "what", "who", "how", "why", "hello", "hi ", "hey",
+                            "can you", "tell me", "like your", "personality")
+            is_question = any(t in user_cmd.lower() for t in chat_triggers)
+            cmd_priority = "USE chat TOOL to reply to this message" if is_question else "highest priority — act on this now"
+            user_cmd_section = f"USER COMMAND ({cmd_priority}): {user_cmd}\n"
+        else:
+            user_cmd_section = ""
 
         prompt = f"""{self.profile}
 
 MEMORY: {json.dumps(self.memory.stats())}
 POLICY: {json.dumps(self.policy.status())}
-CONTEXT: {json.dumps({k: v for k, v in context.items() if k != "config"}, default=str)}
+CONTEXT: {json.dumps({k: v for k, v in context.items() if k not in ("config","user_command")}, default=str)}
 
 TOOLS:
 {tools_str}
 
-What is the best next action? Do NOT pick the same tool as last_action.
-Reply ONLY in JSON: {{"tool": "name", "params": {{}}, "reasoning": "one line"}}"""
+{user_cmd_section}Rules:
+- If user_command is a question, greeting, or conversation → use "chat" tool
+- If user_command is an action request ("search", "find", "send") → use the matching tool
+- Do NOT pick the same tool as last_action
+- When nothing to do → use "wait"
+
+Reply ONLY in valid JSON with no extra text:
+{{"tool": "name", "params": {{}}, "reasoning": "one line"}}"""
 
         text = self._infer(prompt)
-        try:
-            clean = re.sub(r"```(?:json)?", "", text).strip()
-            match = re.search(r"\{.*\}", clean, re.DOTALL)
-            if match:
-                decision = json.loads(match.group())
-                if decision.get("tool") in self._tools:
-                    return decision
-        except Exception:
-            pass
 
+        # ── Robust JSON extraction ─────────────────────────────────────────
+        # LLM sometimes returns malformed JSON like {"params": {}
+        # Strategy: try full match first, then progressively clean up
+        decision = None
+        if text:
+            clean = re.sub(r'```(?:json)?|```', '', text).strip()
+
+            # Try 1: direct parse of the whole response
+            try:
+                decision = json.loads(clean)
+            except Exception:
+                pass
+
+            # Try 2: extract first {...} block (greedy)
+            if not decision:
+                try:
+                    m = re.search(r'\{.*\}', clean, re.DOTALL)
+                    if m:
+                        decision = json.loads(m.group())
+                except Exception:
+                    pass
+
+            # Try 3: extract tool name directly if JSON is broken
+            if not decision:
+                tool_match = re.search(r'"tool"\s*:\s*"([^"]+)"', clean)
+                reason_match = re.search(r'"reasoning"\s*:\s*"([^"]+)"', clean)
+                if tool_match:
+                    decision = {
+                        "tool":      tool_match.group(1),
+                        "params":    {},
+                        "reasoning": reason_match.group(1) if reason_match else "extracted from broken JSON",
+                    }
+
+        # Validate tool exists
+        if decision and decision.get("tool") in self._tools:
+            return decision
+
+        # ── Fallback — pick anything that isn't last_action ────────────────
         last = context.get("last_action", "")
+        reasoning = f"fallback — LLM said: {text[:60]}" if text else "fallback — no LLM response"
         for tool in self._tools:
             if tool != last:
-                return {"tool": tool, "params": {}, "reasoning": "fallback"}
-        return {"tool": next(iter(self._tools)), "params": {}, "reasoning": "fallback"}
+                return {"tool": tool, "params": {}, "reasoning": reasoning}
+        return {"tool": next(iter(self._tools)), "params": {}, "reasoning": reasoning}
 
     def execute(self, decision: dict, context: dict) -> dict:
-        tool = decision.get("tool", "wait")
+        tool   = decision.get("tool", "wait")
         params = decision.get("params", {})
         if tool not in self._tools:
             return {"success": False, "error": f"unknown: {tool}"}
+
         try:
             logger.info("[RUN] %s", tool)
             result = self._tools[tool]["handler"](params, context, self)
@@ -485,210 +348,215 @@ Reply ONLY in JSON: {{"tool": "name", "params": {{}}, "reasoning": "one line"}}"
 
 
 class Agent:
-    def __init__(
-        self,
-        name: str = "RKTM83",
-        profile: str = "",
-        memory_path: str = "./rktm83_memory",
-        policy_overrides: dict = None,
-        state_path: str = "policy_state.json",
-        config: dict = None,
-        agent_state_path: str = "agent_state.json",
-    ):
-        policy_overrides = policy_overrides or {}
-        self.config = config or {}
-        self.name = name
-        self.cycle = 0
-        self.consecutive_failures = 0
-        self.agent_state_path = agent_state_path
+    def __init__(self, name: str = "RKTM83", profile: str = "",
+                 memory_path: str = "./rktm83_memory",
+                 policy_overrides: dict = {}):
+
+        self.name    = name
+        self.cycle   = 0
         self.context = {"agent": name, "cycle": 0, "last_action": "startup"}
 
-        self.policy = PolicyEngine(policy_overrides, state_path=state_path)
+        self.policy = PolicyEngine(policy_overrides)
         self.memory = AgentMemory(memory_path)
-        self.brain = AgentBrain(name, self.policy, self.memory, profile, config=self.config)
+        self.brain  = AgentBrain(name, self.policy, self.memory, profile)
+        
+        # Tools that need permission before running
+        self.PERMISSION_REQUIRED = set()
 
-        self.brain.register_tool(
-            "wait",
-            "Wait - nothing to do right now",
-            lambda p, c, b: {"success": True},
-        )
-        self.brain.register_tool(
-            "status",
-            "Check and print agent memory and policy",
-            lambda p, c, b: self._status(),
-        )
-        self._load_agent_state()
+        self.brain.register_tool("wait",   "Wait — nothing to do right now",          lambda p,c,b: {"success": True})
+
+        def _chat(params, context, brain):
+            """Generate a conversational reply to the user's message."""
+            command = context.get("user_command", "")
+            if not command:
+                return {"success": False, "error": "no command to reply to"}
+
+            prompt = f"""{brain.profile}
+
+The user just said: "{command}"
+
+Reply naturally in your personality. Be helpful, funny, and direct.
+If they're asking what you can do, list your available tools: {list(brain._tools.keys())}
+If they're asking you to do something specific, say you'll do it next cycle.
+If they need permission for something, ask clearly.
+Keep it under 3 sentences. No JSON — just plain conversational text."""
+
+            reply = brain._infer(prompt)
+            if reply:
+                self._write_reply(reply, reply_type="chat")
+                logger.info("[CHAT] replied to: %s", command[:50])
+                return {"success": True, "replied": True}
+            return {"success": False, "error": "LLM returned empty"}
+        self.brain.register_tool("status", "Check and print agent memory and policy",  lambda p,c,b: self._status())
+        self.brain.register_tool("chat",   "Reply conversationally to user messages — use when user_command is a question or greeting", _chat)
         logger.info("Agent '%s' ready", name)
 
     def _status(self):
-        print(f"\n{'=' * 50}\n  {self.name} | Cycle {self.cycle}")
+        print(f"\n{'='*50}\n  {self.name} | Cycle {self.cycle}")
         print(f"  Memory : {self.memory.stats()}")
-        print(f"  Policy : {self.policy.status()}\n{'=' * 50}\n")
+        print(f"  Policy : {self.policy.status()}\n{'='*50}\n")
         return {"success": True}
+
+    REPLY_FILE = "agent_reply.json"
+
+    # Tools that need permission before running
+    PERMISSION_REQUIRED = set()  # populated by skills via agent.require_permission()
+
+    def _write_reply(self, message: str, reply_type: str = "chat"):
+        """Write a reply visible in the dashboard chat."""
+        try:
+            import json as _json
+            with open(self.REPLY_FILE, "w") as f:
+                _json.dump({
+                    "message":   message,
+                    "type":      reply_type,
+                    "timestamp": datetime.datetime.now().strftime("%H:%M:%S"),
+                    "cycle":     self.cycle,
+                }, f, indent=2)
+        except Exception as e:
+            logger.debug("Reply write failed: %s", e)
+
+    def _ask_permission(self, tool: str, reasoning: str) -> bool:
+        """
+        Write a permission request to the reply file.
+        Returns False — agent waits for user to approve via dashboard.
+        """
+        msg = (
+            f"I want to run **{tool}** next.\n\n"
+            f"Reason: *{reasoning}*\n\n"
+            f"Type **yes** to approve or **no** to skip."
+        )
+        self._write_reply(msg, reply_type="permission")
+        logger.info("[PERMISSION] Waiting for approval to run: %s", tool)
+        return False
+
+    def require_permission(self, tool_name: str):
+        """Skills call this to mark a tool as requiring permission."""
+        self.PERMISSION_REQUIRED.add(tool_name)
+        logger.info("Permission required for tool: %s", tool_name)
+
+    def _read_command(self) -> str:
+        """Read a pending command from the dashboard. Returns empty string if none."""
+        try:
+            from pathlib import Path
+            import json as _json
+            cmd_file = Path("agent_command.json")
+            if cmd_file.exists():
+                with open(cmd_file) as f:
+                    cmd = _json.load(f)
+                if cmd.get("status") == "pending":
+                    # Mark as read
+                    cmd["status"] = "processing"
+                    with open(cmd_file, "w") as f:
+                        _json.dump(cmd, f, indent=2)
+                    logger.info("[COMMAND] %s", cmd.get("command",""))
+                    return cmd.get("command", "")
+        except Exception:
+            pass
+        return ""
+
+    def _mark_command_done(self):
+        """Mark the current command as done."""
+        try:
+            from pathlib import Path
+            import json as _json
+            cmd_file = Path("agent_command.json")
+            if cmd_file.exists():
+                with open(cmd_file) as f:
+                    cmd = _json.load(f)
+                cmd["status"] = "done"
+                with open(cmd_file, "w") as f:
+                    _json.dump(cmd, f, indent=2)
+        except Exception:
+            pass
+
+    def _write_log(self, decision: dict, result: dict):
+        """Write current cycle state to agent_log.json for Web UI."""
+        try:
+            log_path = "agent_log.json"
+            # Load existing log
+            try:
+                with open(log_path) as f:
+                    log = json.load(f)
+            except Exception:
+                log = {"agent": self.name, "started": self.context.get("started",""), "cycles": []}
+
+            # Add this cycle
+            entry = {
+                "cycle":     self.cycle,
+                "time":      datetime.datetime.now().strftime("%H:%M:%S"),
+                "tool":      decision.get("tool", ""),
+                "reasoning": decision.get("reasoning", ""),
+                "success":   result.get("success", False),
+                "memory":    self.memory.stats(),
+                "policy":    self.policy.status(),
+            }
+            log["cycles"].append(entry)
+            log["cycles"] = log["cycles"][-50:]  # keep last 50 cycles
+            log["latest"] = entry
+
+            with open(log_path, "w") as f:
+                json.dump(log, f, indent=2)
+        except Exception as e:
+            logger.debug("Log write failed: %s", e)
 
     def load_skill(self, skill_module):
         try:
             skill_module.register(self)
-            logger.info("Skill: %s", getattr(skill_module, "SKILL_NAME", "?"))
+            logger.info("Skill: %s", getattr(skill_module, 'SKILL_NAME', '?'))
         except Exception as e:
             logger.error("Skill failed: %s", e)
 
-    def _load_agent_state(self):
-        if not self.agent_state_path or not os.path.exists(self.agent_state_path):
-            return
-        try:
-            with open(self.agent_state_path, "r", encoding="utf-8") as f:
-                state = json.load(f)
-            self.cycle = int(state.get("cycle_count", 0))
-            self.context["last_action"] = state.get(
-                "last_action", self.context["last_action"]
-            )
-            self.context["resumed_at"] = datetime.datetime.now().isoformat()
-            logger.info(
-                "Resumed agent state from %s (cycle=%s, last_action=%s)",
-                self.agent_state_path,
-                self.cycle,
-                self.context["last_action"],
-            )
-        except Exception as e:
-            logger.warning("Failed to load agent state: %s", e)
-
-    def _save_agent_state(self, extra: dict = None):
-        if not self.agent_state_path:
-            return
-
-        state = {
-            "last_action": self.context.get("last_action", "startup"),
-            "cycle_count": self.cycle,
-            "timestamp": datetime.datetime.now().isoformat(),
-        }
-        if extra:
-            state.update(extra)
-
-        try:
-            with open(self.agent_state_path, "w", encoding="utf-8") as f:
-                json.dump(state, f, indent=2)
-        except Exception as e:
-            logger.warning("Failed to save agent state: %s", e)
-
-    def _notifications_config(self) -> dict:
-        return self.config.get("notifications", {})
-
-    def _notification_enabled(self, event: str) -> bool:
-        cfg = self._notifications_config()
-        if not cfg.get("enabled", False):
-            return False
-        if event == "success":
-            return cfg.get("on_success", True)
-        if event == "error":
-            return cfg.get("on_error", True)
-        return False
-
-    def _summarize_result(self, result: dict) -> str:
-        if not isinstance(result, dict):
-            return str(result)[:120]
-        if result.get("error"):
-            return str(result["error"])[:120]
-
-        parts = []
-        for key, value in result.items():
-            if key == "success" or value in (None, "", []):
-                continue
-            if isinstance(value, list):
-                parts.append(f"{key}={len(value)} items")
-            elif isinstance(value, dict):
-                parts.append(f"{key}=updated")
-            else:
-                parts.append(f"{key}={str(value)[:60]}")
-            if len(parts) == 2:
-                break
-
-        return "; ".join(parts)[:120] or "Completed successfully"
-
-    def _send_notification(self, event: str, tool_name: str, result: dict):
-        if tool_name == "notify" or not self._notification_enabled(event):
-            return
-
-        notify_tool = self.brain._tools.get("notify")
-        if not notify_tool:
-            return
-
-        title = f"{self.name} - {tool_name}"
-        prefix = "Success" if event == "success" else "Error"
-        message = f"{prefix}: {self._summarize_result(result)}"
-        try:
-            notify_tool["handler"](
-                {"title": title, "message": message},
-                self.context,
-                self.brain,
-            )
-        except Exception as e:
-            logger.warning("Notification failed: %s", e)
-
     def run(self, max_cycles: int = 0, cycle_sleep: int = 300):
-        print(f"\n{'=' * 50}")
-        print(f"  {self.name} - Autonomous Agent")
+        print(f"\n{'='*50}")
+        print(f"  {self.name} — Autonomous Agent")
         print(f"  Tools  : {list(self.brain._tools.keys())}")
         print(f"  Memory : {self.memory.path}")
         print(f"  Sleep  : {cycle_sleep}s per cycle")
-        print("  Ctrl+C to stop")
-        print(f"{'=' * 50}\n")
+        print(f"  Ctrl+C to stop")
+        print(f"{'='*50}\n")
 
         try:
             while True:
-                try:
-                    self.cycle += 1
-                    self.context.update(
-                        {
-                            "cycle": self.cycle,
-                            "time": datetime.datetime.now().isoformat(),
-                            "memory": self.memory.stats(),
-                            "policy": self.policy.status(),
-                            "cycle_sleep": cycle_sleep,
-                        }
-                    )
+                self.cycle += 1
+                self.context.update({
+                    "cycle":       self.cycle,
+                    "time":        datetime.datetime.now().isoformat(),
+                    "memory":      self.memory.stats(),
+                    "policy":      self.policy.status(),
+                    "cycle_sleep": cycle_sleep,
+                })
 
-                    logger.info("Cycle %d", self.cycle)
-                    decision = self.brain.decide(self.context)
-                    logger.info(
-                        "[PLAN] %s - %s",
-                        decision.get("tool"),
-                        decision.get("reasoning"),
-                    )
-                    result = self.brain.execute(decision, self.context)
+                logger.info("─── Cycle %d ───", self.cycle)
 
-                    self.context["last_action"] = decision.get("tool")
-                    self.memory.observe(
-                        f"cycle {self.cycle}: {decision.get('tool')}",
-                        {"tool": decision.get("tool"), "cycle": str(self.cycle)},
-                    )
-                    self._save_agent_state()
+                # Check for user command from dashboard
+                command = self._read_command()
+                if command:
+                    self.context["user_command"] = command
+                    logger.info("[COMMAND RECEIVED] %s", command)
+                else:
+                    self.context.pop("user_command", None)
 
-                    if result.get("success"):
-                        self.consecutive_failures = 0
-                        self._send_notification(
-                            "success", decision.get("tool", "tool"), result
-                        )
-                    else:
-                        self._send_notification(
-                            "error", decision.get("tool", "tool"), result
-                        )
+                decision = self.brain.decide(self.context)
+                logger.info("[PLAN] %s — %s", decision.get("tool"), decision.get("reasoning"))
+                result = self.brain.execute(decision, self.context)
 
-                    if max_cycles and self.cycle >= max_cycles:
-                        break
-                    time.sleep(cycle_sleep)
-                except Exception as e:
-                    self.consecutive_failures += 1
-                    logger.exception("Cycle %d crashed: %s", self.cycle, e)
-                    self._save_agent_state({"last_error": str(e)})
-                    self._send_notification("error", "agent_cycle", {"error": str(e)})
-                    if self.consecutive_failures > 5:
-                        logger.warning(
-                            "More than 5 consecutive failures. Sleeping for 5 minutes."
-                        )
-                        time.sleep(300)
-                        self.consecutive_failures = 0
-                    else:
-                        time.sleep(10)
+                # Mark command done after execution
+                if command:
+                    self._mark_command_done()
+
+                self.context["last_action"] = decision.get("tool")
+                self.memory.observe(
+                    f"cycle {self.cycle}: {decision.get('tool')}",
+                    {"tool": decision.get("tool"), "cycle": str(self.cycle)}
+                )
+
+                # Write to agent_log.json for Web UI
+                self._write_log(decision, result)
+
+                if max_cycles and self.cycle >= max_cycles:
+                    break
+                time.sleep(cycle_sleep)
+
         except KeyboardInterrupt:
             print(f"\n  Stopped. Cycles: {self.cycle} | Memory: {self.memory.stats()}")

@@ -63,7 +63,13 @@ def _require_approval() -> bool:
 def _send_email(params: dict, context: dict, brain) -> dict:
     """
     Send an email.
-    params: {"to": str, "subject": str, "body": str, "html": bool (default false)}
+    params: {"to": str, "subject": str, "body": str, "html": bool, "approved_by_user": bool}
+    
+    If email.require_approval is true in config, you MUST:
+      1. First call this tool to show draft (approved_by_user=false)
+      2. Use respond_to_user to show the draft in chat
+      3. Wait for user to type "send it", "yes", or "approved"
+      4. Then call again with approved_by_user: true
     """
     verdict, reason = brain.policy.check("outreach")
     if verdict == "deny":
@@ -73,6 +79,7 @@ def _send_email(params: dict, context: dict, brain) -> dict:
     subject = params.get("subject", "")
     body    = params.get("body", "")
     is_html = params.get("html", False)
+    approved = params.get("approved_by_user", False)
 
     if not to or not subject or not body:
         return {"success": False, "error": "to, subject, and body required"}
@@ -82,18 +89,30 @@ def _send_email(params: dict, context: dict, brain) -> dict:
         return {"success": False, "error": "Email credentials not set in .env"}
 
     # Human approval gate (configurable)
-    if _require_approval():
-        print(f"\n{'='*55}")
-        print(f"  EMAIL DRAFT")
-        print(f"{'='*55}")
-        print(f"  To:      {to}")
-        print(f"  Subject: {subject}")
-        print(f"\n{body}\n")
-        print(f"{'='*55}")
-        approve = input("  Send this email? [y/n]: ").strip().lower()
-        if approve != "y":
-            logger.info("Email declined by operator")
-            return {"success": True, "sent": False, "reason": "declined by operator"}
+    if _require_approval() and not approved:
+        # Show draft to user via respond_to_user tool instead of blocking
+        draft_msg = f"📧 **Email Draft**\n\n**To:** {to}\n**Subject:** {subject}\n\n{body}\n\n---\n\nType **'send it'** or **'yes'** to approve sending, or **'skip'** to discard."
+        
+        # Write to reply file so dashboard shows it
+        try:
+            import json as json_mod
+            with open("agent_reply.json", "w") as f:
+                json_mod.dump({
+                    "message": draft_msg,
+                    "type": "permission",
+                    "timestamp": datetime.datetime.now().strftime("%H:%M:%S"),
+                    "action": "send_email",
+                    "params": {"to": to, "subject": subject, "body": body, "html": is_html},
+                }, f, indent=2)
+        except Exception:
+            pass
+        
+        return {
+            "success": False,
+            "needs_approval": True,
+            "message": "Email draft ready. Show this to user and wait for 'send it' or 'yes' before calling with approved_by_user: true",
+            "draft": {"to": to, "subject": subject, "body": body[:200] + "..." if len(body) > 200 else body},
+        }
 
     try:
         msg = MIMEMultipart("alternative")

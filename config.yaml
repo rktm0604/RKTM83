@@ -61,7 +61,7 @@ skills:
   - research     # skills/research_skill.py   (academic research)
   - github       # skills/github_skill.py     (open source)
   - notify       # skills/notify_skill.py     (Windows toast notifications)
-  # - career     # skills/career_skill.py     (internship hunting)
+  - career      # skills/career_skill.py     (internship hunting)
   # - custom     # skills/custom_skill.py     (your own)
 
 brain:
@@ -88,6 +88,14 @@ email:
 executor:
   allow_dangerous: false   # true to allow os.system, subprocess, etc.
   timeout: 10              # max seconds per code execution
+
+# ── BROWSER CONFIG ─────────────────────────────────────────────
+# Controls the browser automation skill.
+
+browser:
+  headless: false         # true = hidden, false = visible browser
+  visible: true          # shows browser window for automation
+  timeout: 20            # seconds to wait for page load
 
 # ── POLICY OVERRIDES ──────────────────────────────────────────
 # Override default policy limits here.

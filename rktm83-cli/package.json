@@ -1,0 +1,28 @@
+{
+  "name": "rktm83",
+  "version": "1.0.0",
+  "description": "RKTM83 - Personal AI Agent CLI (TypeScript Wrapper)",
+  "main": "dist/index.js",
+  "bin": {
+    "rktm83": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts"
+  },
+  "keywords": ["ai", "agent", "cli", "rktm83"],
+  "author": "Raktim Banerjee",
+  "license": "MIT",
+  "dependencies": {
+    "chalk": "^4.1.2",
+    "commander": "^11.1.0",
+    "inquirer": "^8.2.5",
+    "ora": "^5.4.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
+  }
+}
